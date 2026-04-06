@@ -118,6 +118,7 @@ export class NativeSSE {
   private readonly _policy: ReconnectPolicy;
   private readonly _maxAttempts: number;
   private readonly _batcher: EventBatcher | null;
+  private readonly _staleTimeoutMs: number;
 
   // ── Connection state ────────────────────────────────────────────────────────
   private _state: SseState = SSE_STATE.IDLE;
@@ -125,6 +126,8 @@ export class NativeSSE {
   private _lastEventId = '';
   private _reconnectAttempts = 0;
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
+  private _staleTimer: ReturnType<typeof setTimeout> | null = null;
+  private _networkUnsub: (() => void) | null = null;
   private _subscriptions: EmitterSubscription[] = [];
   private _appStateSub: { remove(): void } | null = null;
 
@@ -158,11 +161,12 @@ export class NativeSSE {
       );
     }
 
-    this._url         = url;
-    this._opts        = options;
-    this._policy      = resolvePolicy(options);
-    this._maxAttempts = options.maxReconnectAttempts ?? -1;
-    this._batcher     = options.batch?.enabled
+    this._url            = url;
+    this._opts           = options;
+    this._policy         = resolvePolicy(options);
+    this._maxAttempts    = options.maxReconnectAttempts ?? -1;
+    this._staleTimeoutMs = options.staleTimeoutMs ?? 0;
+    this._batcher        = options.batch?.enabled
       ? new EventBatcher(options.batch, (evts) => this._deliverBatch(evts))
       : null;
 
@@ -170,6 +174,12 @@ export class NativeSSE {
       this._appStateSub = AppState.addEventListener(
         'change',
         this._handleAppState,
+      );
+    }
+
+    if (options.networkObserver) {
+      this._networkUnsub = options.networkObserver.subscribe(
+        this._handleNetworkChange,
       );
     }
 
@@ -222,7 +232,7 @@ export class NativeSSE {
   close(): void {
     const prev = this._state;
     this._setState(SSE_STATE.CLOSED);
-    this._cleanup(/* removeAppState */ true);
+    this._cleanup(/* removeAll */ true);
     if (prev !== SSE_STATE.IDLE) {
       NativeNativeSse?.disconnect(this._streamId);
     }
@@ -279,6 +289,7 @@ export class NativeSSE {
         this._setState(SSE_STATE.OPEN);
         this._reconnectAttempts = 0;
         this._metrics.connectedAt = Date.now();
+        this._resetStaleTimer();
 
         const evt: SseOpenEvent = { type: 'open', origin: this._url };
         this.onopen?.(evt);
@@ -302,6 +313,7 @@ export class NativeSSE {
         this._metrics.bytesReceived    += raw.byteLength ?? raw.data.length;
         this._metrics.eventsReceived   += 1;
         this._metrics.lastEventTimestamp = Date.now();
+        this._resetStaleTimer();
 
         const evt: SseMessageEvent = {
           type:        raw.eventType || 'message',
@@ -426,13 +438,28 @@ export class NativeSSE {
     }, delay);
   }
 
-  // ── Lifecycle (AppState) ────────────────────────────────────────────────────
+  // ── Lifecycle (AppState / network) ─────────────────────────────────────────
 
   private _handleAppState = (nextState: AppStateStatus): void => {
     if (nextState === 'background' || nextState === 'inactive') {
       this.pause();
     } else if (nextState === 'active') {
       this.resume();
+    }
+  };
+
+  private _handleNetworkChange = (isConnected: boolean): void => {
+    if (!isConnected) return;
+    // Network restored: if we're sitting in a backoff, reconnect immediately.
+    if (this._state === SSE_STATE.RECONNECTING) {
+      if (this._opts.debug) {
+        console.log('[NativeSSE] Network restored — reconnecting immediately.');
+      }
+      if (this._reconnectTimer !== null) {
+        clearTimeout(this._reconnectTimer);
+        this._reconnectTimer = null;
+      }
+      this._doConnect();
     }
   };
 
@@ -469,17 +496,59 @@ export class NativeSSE {
     this._state = next;
   }
 
-  private _cleanup(removeAppState = false): void {
+  private _resetStaleTimer(): void {
+    if (!this._staleTimeoutMs) return;
+    if (this._staleTimer !== null) clearTimeout(this._staleTimer);
+    this._staleTimer = setTimeout(() => {
+      this._staleTimer = null;
+      if (
+        this._state !== SSE_STATE.OPEN &&
+        this._state !== SSE_STATE.CONNECTING
+      ) return;
+
+      if (this._opts.debug) {
+        console.log(
+          `[NativeSSE] Stale connection detected (no data for ${this._staleTimeoutMs}ms) — reconnecting.`,
+        );
+      }
+
+      const err = this._makeError(
+        'TIMEOUT_ERROR',
+        `No data received for ${this._staleTimeoutMs}ms (stale connection)`,
+        undefined,
+        true,
+      );
+      this._metrics.lastError = err;
+      this.onerror?.(err);
+      this._dispatch('error', err);
+
+      // Tear down the native connection and schedule a reconnect.
+      NativeNativeSse?.disconnect(this._streamId);
+      this._scheduleReconnect();
+    }, this._staleTimeoutMs);
+  }
+
+  private _clearStaleTimer(): void {
+    if (this._staleTimer !== null) {
+      clearTimeout(this._staleTimer);
+      this._staleTimer = null;
+    }
+  }
+
+  private _cleanup(removeAll = false): void {
     if (this._reconnectTimer !== null) {
       clearTimeout(this._reconnectTimer);
       this._reconnectTimer = null;
     }
+    this._clearStaleTimer();
     for (const sub of this._subscriptions) sub.remove();
     this._subscriptions = [];
-    // The AppState subscription survives pause/resume; only close() removes it.
-    if (removeAppState) {
+    // AppState and network subscriptions survive pause/resume; only close() removes them.
+    if (removeAll) {
       this._appStateSub?.remove();
       this._appStateSub = null;
+      this._networkUnsub?.();
+      this._networkUnsub = null;
     }
     this._batcher?.clear();
   }

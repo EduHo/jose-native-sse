@@ -17,6 +17,7 @@ export type {
   ReconnectPolicy,
   FixedReconnectPolicy,
   ExponentialReconnectPolicy,
+  NetworkObserver,
   // States
   SseReadyState,
   SseState,

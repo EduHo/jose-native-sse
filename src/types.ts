@@ -111,6 +111,33 @@ export interface StreamMetrics {
   connectedAt: number | null;
 }
 
+// ─── Network observer (pluggable, no hard dependency) ────────────────────────
+
+/**
+ * Minimal interface for network connectivity observation.
+ * Implement this to integrate any network library (e.g. @react-native-community/netinfo).
+ *
+ * @example
+ * ```ts
+ * import NetInfo from '@react-native-community/netinfo';
+ *
+ * const sse = new NativeSSE(url, {
+ *   networkObserver: {
+ *     subscribe: (cb) =>
+ *       NetInfo.addEventListener((state) => cb(!!state.isConnected)),
+ *   },
+ * });
+ * ```
+ */
+export interface NetworkObserver {
+  /**
+   * Subscribe to connectivity changes.
+   * @param onStateChange called with `true` when connected, `false` when not.
+   * @returns a cleanup function that removes the subscription.
+   */
+  subscribe(onStateChange: (isConnected: boolean) => void): () => void;
+}
+
 // ─── Connect options (V2 superset of V1) ─────────────────────────────────────
 
 export interface SseConnectOptions {
@@ -139,6 +166,29 @@ export interface SseConnectOptions {
    * Default: 1 048 576 (1 MB).
    */
   maxLineLength?: number;
+
+  // ── Stale detection ───────────────────────────────────────────────────────
+  /**
+   * If no event (open or message) is received within this many milliseconds,
+   * the connection is considered stale (zombie) and a reconnect is triggered.
+   * Resets on every received event. Disabled when 0 or omitted (default).
+   *
+   * Useful when the server may silently drop a connection without closing it
+   * (e.g. NAT/proxy timeouts, iOS background HTTP keep-alive limits).
+   *
+   * @example 30_000  // reconnect if no data for 30 seconds
+   */
+  staleTimeoutMs?: number;
+
+  // ── Network awareness ─────────────────────────────────────────────────────
+  /**
+   * Plug-in network observer.
+   * When provided, the client will reconnect immediately (bypassing backoff)
+   * when connectivity is restored while in RECONNECTING state.
+   *
+   * See the `NetworkObserver` interface for the expected contract.
+   */
+  networkObserver?: NetworkObserver;
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
   /**

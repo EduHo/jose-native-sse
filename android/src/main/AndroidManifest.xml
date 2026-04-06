@@ -1,0 +1,3 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- INTERNET permission is declared by the app; the library only needs it implicitly. -->
+</manifest>

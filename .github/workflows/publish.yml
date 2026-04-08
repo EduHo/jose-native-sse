@@ -16,7 +16,7 @@ jobs:
           node-version: 24
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --omit=optional
       - run: npm test
       - run: npm run typecheck
 
@@ -37,7 +37,7 @@ jobs:
           registry-url: https://registry.npmjs.org
           cache: npm
 
-      - run: npm ci
+      - run: npm ci --omit=optional
       - run: npm run prepare   # builds lib/ and plugin/build/
 
       - name: Publish

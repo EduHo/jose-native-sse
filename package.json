@@ -68,9 +68,6 @@
     "react": "*",
     "react-native": "*"
   },
-  "optionalDependencies": {
-    "fsevents": "^2.3.3"
-  },
   "peerDependenciesMeta": {
     "@expo/config-plugins": {
       "optional": true

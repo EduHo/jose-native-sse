@@ -17,6 +17,9 @@ jobs:
           node-version: 24
           cache: npm
 
+      - name: Remove macOS-only fsevents from lock file
+        run: node -e "const fs=require('fs');const l=JSON.parse(fs.readFileSync('package-lock.json','utf8'));delete l.packages['node_modules/fsevents'];fs.writeFileSync('package-lock.json',JSON.stringify(l,null,2));"
+
       - run: npm install --ignore-scripts
       - run: npm test
       - run: npm run typecheck
@@ -37,6 +40,9 @@ jobs:
           node-version: 24
           registry-url: https://registry.npmjs.org
           cache: npm
+
+      - name: Remove macOS-only fsevents from lock file
+        run: node -e "const fs=require('fs');const l=JSON.parse(fs.readFileSync('package-lock.json','utf8'));delete l.packages['node_modules/fsevents'];fs.writeFileSync('package-lock.json',JSON.stringify(l,null,2));"
 
       - run: npm install --ignore-scripts
       - run: npm run prepare   # builds lib/ and plugin/build/

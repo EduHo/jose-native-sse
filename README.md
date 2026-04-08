@@ -59,6 +59,8 @@ The native layer is intentionally thin — it only handles the HTTP connection a
 
 1. [Installation](#installation)
 2. [Setup](#setup)
+   - [Expo](#expo)
+   - [Bare React Native](#bare-react-native----infoplist)
 3. [Quick Start](#quick-start)
 4. [API Reference](#api-reference)
    - [NativeSSE](#nativesse)
@@ -97,23 +99,92 @@ npm install jose-native-sse
 yarn add jose-native-sse
 ```
 
-### iOS
+### Bare React Native
 
 ```sh
 cd ios && pod install
 ```
 
-### Android
+No extra Android steps — OkHttp is already bundled with React Native.
 
-No extra steps. The library uses OkHttp, which is already bundled with React Native.
+### Expo
+
+See the [Expo setup section](#expo-1) below.
 
 ---
 
 ## Setup
 
-### iOS — `Info.plist`
+### Expo
 
-If your SSE server uses `http://` (not `https://`), add an App Transport Security exception:
+The library ships a built-in **Expo config plugin** that handles all native
+configuration automatically.
+
+#### 1. Add the plugin to `app.json` / `app.config.js`
+
+```json
+{
+  "expo": {
+    "plugins": [
+      "jose-native-sse"
+    ]
+  }
+}
+```
+
+If your SSE server uses plain `http://` (not `https://`), pass `allowCleartext`:
+
+```json
+{
+  "expo": {
+    "plugins": [
+      ["jose-native-sse", { "allowCleartext": true }]
+    ]
+  }
+}
+```
+
+This automatically adds `NSAllowsArbitraryLoads` on iOS and
+`android:usesCleartextTraffic="true"` on Android.
+
+#### 2. Build with EAS or run locally
+
+```sh
+# Development build (recommended — full native module)
+npx expo run:ios
+npx expo run:android
+
+# Or build with EAS
+eas build --profile development
+```
+
+#### Expo Go
+
+The native TurboModule is **not available in Expo Go** (Expo Go does not
+support arbitrary native modules). The library detects this automatically and
+falls back to an **XHR transport** — the same JS API, same reconnect logic,
+same event callbacks. No code changes needed.
+
+```ts
+const sse = new NativeSSE(url, { debug: true });
+// Console: "[NativeSSE] Native module not available — using XHR fallback transport."
+
+if (sse.usingFallback) {
+  // Running in Expo Go or with native module absent
+}
+```
+
+To force a specific transport for testing:
+
+```ts
+const sse = new NativeSSE(url, { transport: 'xhr' });   // always XHR
+const sse = new NativeSSE(url, { transport: 'fetch' });  // always Fetch
+const sse = new NativeSSE(url, { transport: 'native' }); // always native (throws in Expo Go)
+```
+
+### Bare React Native — `Info.plist`
+
+If your SSE server uses `http://`, add an App Transport Security exception:
 
 ```xml
 <key>NSAppTransportSecurity</key>
@@ -123,7 +194,7 @@ If your SSE server uses `http://` (not `https://`), add an App Transport Securit
 </dict>
 ```
 
-### Android — `AndroidManifest.xml`
+### Bare React Native — `AndroidManifest.xml`
 
 Your app's manifest must declare the `INTERNET` permission:
 

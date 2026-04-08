@@ -19,7 +19,6 @@ using namespace facebook::react;
   /// streamId → active SseConnectionSwift. Protected by _queue.
   NSMutableDictionary<NSString *, SseConnectionSwift *> *_connections;
   dispatch_queue_t _queue;
-  NSInteger _listenerCount;
 }
 
 // ─── Registration ────────────────────────────────────────────────────────────
@@ -33,9 +32,8 @@ RCT_EXPORT_MODULE(NativeNativeSse)
 - (instancetype)init
 {
   if (self = [super init]) {
-    _connections   = [NSMutableDictionary dictionary];
-    _queue         = dispatch_queue_create("com.nativesse.module.v2", DISPATCH_QUEUE_SERIAL);
-    _listenerCount = 0;
+    _connections = [NSMutableDictionary dictionary];
+    _queue       = dispatch_queue_create("com.nativesse.module.v2", DISPATCH_QUEUE_SERIAL);
   }
   return self;
 }
@@ -49,34 +47,23 @@ RCT_EXPORT_MODULE(NativeNativeSse)
 // ─── RCTEventEmitter ─────────────────────────────────────────────────────────
 
 - (NSArray<NSString *> *)supportedEvents {
-  return @[@"sse_open", @"sse_message", @"sse_error", @"sse_close"];
+  return @[@"sse_open", @"sse_chunk", @"sse_error", @"sse_close"];
 }
-- (void)startObserving  { _listenerCount++; }
-- (void)stopObserving   { _listenerCount--; }
-
 // ─── Exported methods ─────────────────────────────────────────────────────────
 
-RCT_EXPORT_METHOD(connect:(NSString *)streamId
-                  url:(NSString *)urlStr
-                  options:(NSDictionary *)options)
+/// Shared implementation used by both Old and New Architecture entry points.
+- (void)_connectImpl:(NSString *)streamId
+                 url:(NSURL *)url
+              method:(NSString *)method
+             headers:(NSDictionary *)headers
+                body:(NSString *)body
+           timeoutMs:(double)timeoutMs
 {
-  NSURL *url = [NSURL URLWithString:urlStr];
-  if (!url) {
-    [self sendError:streamId message:@"Invalid URL" statusCode:-1 errorCode:@"INVALID_URL" isFatal:YES];
-    return;
-  }
-
-  NSString    *method    = options[@"method"]        ?: @"GET";
-  NSDictionary *headers  = options[@"headers"]       ?: @{};
-  NSString    *body      = options[@"body"]          ?: @"";
-  double       timeoutMs = [options[@"timeout"] doubleValue];
-  NSInteger    maxLine   = options[@"maxLineLength"] ? [options[@"maxLineLength"] integerValue] : 1048576;
-
   dispatch_async(_queue, ^{
     // Cancel any previous connection with this ID.
     [self->_connections[streamId] disconnect];
 
-    __weak typeof(self) weak = self;
+    __weak NativeSse *weakSelf = self;
 
     SseConnectionSwift *conn = [[SseConnectionSwift alloc]
         initWithStreamId: streamId
@@ -84,11 +71,10 @@ RCT_EXPORT_METHOD(connect:(NSString *)streamId
                   method: method
                  headers: headers
                     body: (body.length > 0 ? body : nil)
-               timeoutMs: timeoutMs
-           maxLineLength: (NSInteger)maxLine];
+               timeoutMs: timeoutMs];
 
     conn.onOpen = ^(NSInteger statusCode, NSDictionary<NSString *, NSString *> *respHeaders) {
-      __strong typeof(weak) s = weak; if (!s) return;
+      __strong NativeSse *s = weakSelf; if (!s) return;
       [s sendEventWithName:@"sse_open" body:@{
         @"streamId":   streamId,
         @"statusCode": @(statusCode),
@@ -96,34 +82,17 @@ RCT_EXPORT_METHOD(connect:(NSString *)streamId
       }];
     };
 
-    conn.onEvent = ^(NSString *type, NSString *data, NSString *lastId, NSInteger byteLen, NSInteger retryMs) {
-      __strong typeof(weak) s = weak; if (!s) return;
-      // __retry__ is a protocol-internal signal; don't forward as a user event.
-      if ([type isEqualToString:@"__retry__"]) {
-        // Forward just the retry hint so JS can update its reconnect interval.
-        [s sendEventWithName:@"sse_message" body:@{
-          @"streamId":   streamId,
-          @"eventType":  @"__retry__",
-          @"data":       data,
-          @"id":         lastId ?: @"",
-          @"byteLength": @(0),
-          @"retry":      @(retryMs),
-        }];
-        return;
-      }
-      NSMutableDictionary *body = [@{
+    conn.onChunk = ^(NSString *chunk, NSInteger byteLen) {
+      __strong NativeSse *s = weakSelf; if (!s) return;
+      [s sendEventWithName:@"sse_chunk" body:@{
         @"streamId":   streamId,
-        @"eventType":  type,
-        @"data":       data,
-        @"id":         lastId ?: @"",
+        @"chunk":      chunk,
         @"byteLength": @(byteLen),
-      } mutableCopy];
-      if (retryMs >= 0) body[@"retry"] = @(retryMs);
-      [s sendEventWithName:@"sse_message" body:body];
+      }];
     };
 
     conn.onError = ^(NSString *message, NSInteger statusCode, NSString *errorCode, BOOL isFatal) {
-      __strong typeof(weak) s = weak; if (!s) return;
+      __strong NativeSse *s = weakSelf; if (!s) return;
       [s sendError:streamId message:message statusCode:statusCode errorCode:errorCode isFatal:isFatal];
       if (isFatal) {
         dispatch_async(s->_queue, ^{ [s->_connections removeObjectForKey:streamId]; });
@@ -131,7 +100,7 @@ RCT_EXPORT_METHOD(connect:(NSString *)streamId
     };
 
     conn.onClose = ^{
-      __strong typeof(weak) s = weak; if (!s) return;
+      __strong NativeSse *s = weakSelf; if (!s) return;
       [s sendEventWithName:@"sse_close" body:@{ @"streamId": streamId }];
       dispatch_async(s->_queue, ^{ [s->_connections removeObjectForKey:streamId]; });
     };
@@ -141,25 +110,85 @@ RCT_EXPORT_METHOD(connect:(NSString *)streamId
   });
 }
 
-RCT_EXPORT_METHOD(disconnect:(NSString *)streamId)
+#ifdef RCT_NEW_ARCH_ENABLED
+- (void)connect:(NSString *)streamId
+            url:(NSString *)urlStr
+        options:(JS::NativeNativeSse::ConnectOptions &)options
+{
+  NSURL *url = [NSURL URLWithString:urlStr];
+  if (!url) {
+    [self sendError:streamId message:@"Invalid URL" statusCode:-1 errorCode:@"INVALID_URL" isFatal:YES];
+    return;
+  }
+  NSString     *method    = options.method()        ?: @"GET";
+  NSDictionary *headers   = (NSDictionary *)options.headers() ?: @{};
+  NSString     *body      = options.body()          ?: @"";
+  double        timeoutMs = options.timeout();
+  [self _connectImpl:streamId url:url method:method headers:headers body:body timeoutMs:timeoutMs];
+}
+#else
+RCT_EXPORT_METHOD(connect:(NSString *)streamId
+                  url:(NSString *)urlStr
+                  options:(NSDictionary *)options)
+{
+  NSURL *url = [NSURL URLWithString:urlStr];
+  if (!url) {
+    [self sendError:streamId message:@"Invalid URL" statusCode:-1 errorCode:@"INVALID_URL" isFatal:YES];
+    return;
+  }
+  NSString     *method    = options[@"method"]        ?: @"GET";
+  NSDictionary *headers   = options[@"headers"]       ?: @{};
+  NSString     *body      = options[@"body"]          ?: @"";
+  double        timeoutMs = [options[@"timeout"] doubleValue];
+  [self _connectImpl:streamId url:url method:method headers:headers body:body timeoutMs:timeoutMs];
+}
+#endif
+
+- (void)_disconnectImpl:(NSString *)streamId
 {
   dispatch_async(_queue, ^{
-    [self->_connections[streamId] disconnect];
-    [self->_connections removeObjectForKey:streamId];
+    SseConnectionSwift *conn = self->_connections[streamId];
+    if (conn) {
+      // Nil callbacks first so in-flight URLSession callbacks don't fire
+      // spurious sse_close / sse_error events to JS after we've cancelled.
+      conn.onOpen  = nil;
+      conn.onChunk = nil;
+      conn.onError = nil;
+      conn.onClose = nil;
+      [conn disconnect];
+      [self->_connections removeObjectForKey:streamId];
+    }
   });
 }
 
-RCT_EXPORT_METHOD(disconnectAll)
+- (void)_disconnectAllImpl
 {
   dispatch_async(_queue, ^{
-    for (SseConnectionSwift *c in self->_connections.allValues) [c disconnect];
+    for (SseConnectionSwift *c in self->_connections.allValues) {
+      c.onOpen  = nil;
+      c.onChunk = nil;
+      c.onError = nil;
+      c.onClose = nil;
+      [c disconnect];
+    }
     [self->_connections removeAllObjects];
   });
 }
 
-// Subscription bookkeeping — no-op because startObserving/stopObserving handle it.
-RCT_EXPORT_METHOD(addListener:(NSString *)eventName)  {}
-RCT_EXPORT_METHOD(removeListeners:(double)count)       {}
+#ifdef RCT_NEW_ARCH_ENABLED
+- (void)disconnect:(NSString *)streamId { [self _disconnectImpl:streamId]; }
+- (void)disconnectAll                  { [self _disconnectAllImpl]; }
+#else
+RCT_EXPORT_METHOD(disconnect:(NSString *)streamId) { [self _disconnectImpl:streamId]; }
+RCT_EXPORT_METHOD(disconnectAll)                   { [self _disconnectAllImpl]; }
+#endif
+
+// Required by NativeNativeSseSpec (New Architecture) and RCTEventEmitter (Old
+// Architecture). Must delegate to super so that RCTEventEmitter's internal
+// _listenerCount is maintained — sendEventWithName:body: silently drops events
+// when that counter is 0, which caused "Sending sse_X with no listeners" warnings.
+- (void)addListener:(NSString *)eventName { [super addListener:eventName]; }
+- (void)removeListeners:(double)count     { [super removeListeners:count]; }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 

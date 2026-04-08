@@ -23,6 +23,8 @@ export type ConnectOptions = {
   lastEventId: string;
   /** Timeout in milliseconds. 0 = no timeout. */
   timeout: number;
+  /** Maximum byte length of a single SSE line. Default: 1 048 576 (1 MB). */
+  maxLineLength: number;
 };
 
 export interface Spec extends TurboModule {

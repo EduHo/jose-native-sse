@@ -35,10 +35,9 @@ class NativeSseModule(private val reactContext: ReactApplicationContext) :
 
     @ReactMethod
     fun connect(streamId: String, url: String, options: ReadableMap) {
-        val method        = options.getString("method")   ?: "GET"
-        val body          = options.getString("body")     ?: ""
-        val timeoutMs     = if (options.hasKey("timeout"))        options.getInt("timeout").toLong()        else 0L
-        val maxLineLength = if (options.hasKey("maxLineLength"))  options.getInt("maxLineLength")            else 1_048_576
+        val method    = options.getString("method") ?: "GET"
+        val body      = options.getString("body")   ?: ""
+        val timeoutMs = if (options.hasKey("timeout")) options.getInt("timeout").toLong() else 0L
 
         val headers = mutableMapOf<String, String>()
         options.getMap("headers")?.entryIterator?.forEach { e ->
@@ -49,13 +48,12 @@ class NativeSseModule(private val reactContext: ReactApplicationContext) :
         connections[streamId]?.disconnect()
 
         val connection = SseConnection(
-            streamId      = streamId,
-            url           = url,
-            method        = method,
-            headers       = headers,
-            body          = body.ifEmpty { null },
-            timeoutMs     = timeoutMs,
-            maxLineLength = maxLineLength,
+            streamId  = streamId,
+            url       = url,
+            method    = method,
+            headers   = headers,
+            body      = body.ifEmpty { null },
+            timeoutMs = timeoutMs,
 
             onOpen = { statusCode, respHeaders ->
                 val params: WritableMap = Arguments.createMap()
@@ -67,15 +65,12 @@ class NativeSseModule(private val reactContext: ReactApplicationContext) :
                 sendEvent("sse_open", params)
             },
 
-            onEvent = { type, data, id, byteLength, retryMs ->
+            onChunk = { chunk, byteLength ->
                 val params: WritableMap = Arguments.createMap()
                 params.putString("streamId",   streamId)
-                params.putString("eventType",  type)
-                params.putString("data",       data)
-                params.putString("id",         id)
+                params.putString("chunk",      chunk)
                 params.putInt("byteLength",    byteLength)
-                if (retryMs != null) params.putInt("retry", retryMs)
-                sendEvent("sse_message", params)
+                sendEvent("sse_chunk", params)
             },
 
             onError = { message, statusCode, errorCode, isFatal ->

@@ -21,9 +21,8 @@ function emitOpen() {
 }
 
 function emitMessage(data = 'hello') {
-  __emit('sse_message', {
-    streamId: lastStreamId(), eventType: 'message', data, id: '', byteLength: data.length,
-  });
+  const text = `data: ${data}\n\n`;
+  __emit('sse_chunk', { streamId: lastStreamId(), chunk: text, byteLength: text.length });
 }
 
 beforeEach(() => { jest.useFakeTimers(); __reset(); });

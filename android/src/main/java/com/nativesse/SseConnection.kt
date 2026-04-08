@@ -7,17 +7,19 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
-import java.io.BufferedReader
 import java.io.IOException
-import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * V2 OkHttp-backed SSE connection with:
- *  • Structured error codes (NETWORK_ERROR, HTTP_ERROR, TIMEOUT_ERROR, PARSE_ERROR)
- *  • Buffer overflow protection via maxLineLength
- *  • byteLength reported per event for JS-side metrics
+ * V2 OkHttp-backed SSE connection — thin transport.
+ *
+ * Raw UTF-8 chunks are forwarded to JS via onChunk. All SSE protocol parsing
+ * (line splitting, field extraction, event dispatch) lives in the JS SseParser,
+ * keeping native code minimal and eliminating parsing duplication.
+ *
+ * Features:
+ *  • Structured error codes (NETWORK_ERROR, HTTP_ERROR, TIMEOUT_ERROR)
  *  • Thread-safe cancellation via AtomicBoolean
  */
 internal class SseConnection(
@@ -27,13 +29,9 @@ internal class SseConnection(
     private val headers:      Map<String, String>,
     private val body:         String?,
     private val timeoutMs:    Long,
-    private val maxLineLength: Int = 1_048_576,
     private val onOpen:  (statusCode: Int, headers: Map<String, String>) -> Unit,
-    /**
-     * Parameters: eventType, data, lastEventId, byteLength, retryMs (null if not a retry event).
-     * For the __retry__ pseudo-event, byteLength=0 and retryMs is set.
-     */
-    private val onEvent: (type: String, data: String, id: String, byteLength: Int, retry: Int?) -> Unit,
+    /** Parameters: rawChunk text, UTF-8 byte length. */
+    private val onChunk: (chunk: String, byteLength: Int) -> Unit,
     /** Parameters: message, statusCode (null = not HTTP), errorCode, isFatal. */
     private val onError: (message: String, statusCode: Int?, errorCode: String, isFatal: Boolean) -> Unit,
     private val onClose: () -> Unit,
@@ -49,20 +47,10 @@ internal class SseConnection(
             .build()
     }
 
-    // ─── SSE parser state ─────────────────────────────────────────────────────
-
-    private var eventType   = ""
-    private val dataLines   = mutableListOf<String>()
-    private var lastEventId = ""
-
     // ─── Public API ───────────────────────────────────────────────────────────
 
     fun connect() {
         cancelled.set(false)
-
-        // Reset parser state (lastEventId preserved across reconnects per spec).
-        eventType = ""
-        dataLines.clear()
 
         val reqBuilder = Request.Builder().url(url)
         for ((k, v) in headers) reqBuilder.header(k, v)
@@ -104,11 +92,14 @@ internal class SseConnection(
                         return
                     }
                     try {
-                        // BufferedReader.readLine() handles \n, \r, \r\n — perfect for SSE.
-                        val reader = BufferedReader(InputStreamReader(bodyStream, Charsets.UTF_8))
-                        var line: String?
-                        while (!cancelled.get() && reader.readLine().also { line = it } != null) {
-                            processLine(line!!)
+                        // Read raw bytes and forward as UTF-8 text chunks.
+                        // All SSE parsing happens in JS.
+                        val buffer = ByteArray(8192)
+                        var bytesRead: Int
+                        while (!cancelled.get() &&
+                               bodyStream.read(buffer).also { bytesRead = it } != -1) {
+                            val chunk = String(buffer, 0, bytesRead, Charsets.UTF_8)
+                            onChunk(chunk, bytesRead)
                         }
                         if (!cancelled.get()) onClose()
                     } catch (e: IOException) {
@@ -126,61 +117,5 @@ internal class SseConnection(
     fun disconnect() {
         cancelled.set(true)
         call?.cancel()
-    }
-
-    // ─── SSE line parsing ─────────────────────────────────────────────────────
-
-    private fun processLine(line: String) {
-        // Guard against pathological lines (e.g. a server sending a 10 MB line).
-        if (line.length > maxLineLength) {
-            onError(
-                "Line exceeds maxLineLength (${line.length} > $maxLineLength)",
-                null, "PARSE_ERROR", false
-            )
-            return
-        }
-
-        when {
-            line.isEmpty()         -> dispatchEvent()
-            line.startsWith(":")   -> { /* SSE comment – ignored */ }
-            else -> {
-                val colonIdx = line.indexOf(':')
-                val field: String
-                val value: String
-                if (colonIdx == -1) {
-                    field = line; value = ""
-                } else {
-                    field = line.substring(0, colonIdx)
-                    val raw = line.substring(colonIdx + 1)
-                    value = if (raw.startsWith(" ")) raw.substring(1) else raw
-                }
-                when (field) {
-                    "event" -> eventType = value
-                    "data"  -> dataLines.add(value)
-                    "id"    -> if (!value.contains('\u0000')) lastEventId = value
-                    "retry" -> {
-                        if (value.all { it.isDigit() } && value.isNotEmpty()) {
-                            value.toIntOrNull()?.let { ms ->
-                                onEvent("__retry__", ms.toString(), lastEventId, 0, ms)
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-
-    private fun dispatchEvent() {
-        if (dataLines.isEmpty()) { eventType = ""; return }
-
-        val data      = dataLines.joinToString("\n")
-        val type      = if (eventType.isEmpty()) "message" else eventType
-        val id        = lastEventId
-        val byteLength = data.toByteArray(Charsets.UTF_8).size
-
-        eventType = ""
-        dataLines.clear()
-
-        onEvent(type, data, id, byteLength, null)
     }
 }

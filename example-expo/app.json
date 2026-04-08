@@ -1,0 +1,13 @@
+{
+  "expo": {
+    "name": "example-expo",
+    "slug": "example-expo",
+    "version": "1.0.0",
+    "android": {
+      "package": "com.eduardo.ceiia.exampleexpo"
+    },
+    "ios": {
+      "bundleIdentifier": "com.eduardo.ceiia.exampleexpo"
+    }
+  }
+}

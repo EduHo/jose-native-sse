@@ -116,11 +116,11 @@ describe('SseStreamManager – stream isolation', () => {
     emitOpenFor(sidA);
     emitOpenFor(sidB);
 
-    __emit('sse_message', { streamId: sidA, eventType: 'message', data: 'for-a', id: '', byteLength: 5 });
+    __emit('sse_chunk', { streamId: sidA, chunk: 'data: for-a\n\n', byteLength: 13 });
     expect(handlerA).toHaveBeenCalledTimes(1);
     expect(handlerB).not.toHaveBeenCalled();
 
-    __emit('sse_message', { streamId: sidB, eventType: 'message', data: 'for-b', id: '', byteLength: 5 });
+    __emit('sse_chunk', { streamId: sidB, chunk: 'data: for-b\n\n', byteLength: 13 });
     expect(handlerA).toHaveBeenCalledTimes(1);
     expect(handlerB).toHaveBeenCalledTimes(1);
 
@@ -213,12 +213,13 @@ describe('SseStreamManager – metrics', () => {
     const sidB = streamIdAt(1);
     emitOpenFor(sidA); emitOpenFor(sidB);
 
-    __emit('sse_message', { streamId: sidA, eventType: 'message', data: 'hi', id: '', byteLength: 2 });
-    __emit('sse_message', { streamId: sidB, eventType: 'message', data: 'hey', id: '', byteLength: 3 });
+    // "data: hi\n\n" = 10 bytes, "data: hey\n\n" = 11 bytes
+    __emit('sse_chunk', { streamId: sidA, chunk: 'data: hi\n\n',  byteLength: 10 });
+    __emit('sse_chunk', { streamId: sidB, chunk: 'data: hey\n\n', byteLength: 11 });
 
     const agg = mgr.getAggregateMetrics();
     expect(agg.totalEventsReceived).toBe(2);
-    expect(agg.totalBytesReceived).toBe(5);
+    expect(agg.totalBytesReceived).toBe(21);
     expect(agg.streamCount).toBe(2);
     mgr.closeAll();
   });

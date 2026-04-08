@@ -14,9 +14,15 @@ function lastStreamId() {
 function emitOpen() {
   __emit('sse_open', { streamId: lastStreamId(), statusCode: 200, headers: {} });
 }
-function emitMsg(data: string, id = '', byteLength = data.length, eventType = 'message') {
-  __emit('sse_message', { streamId: lastStreamId(), eventType, data, id, byteLength });
+function emitChunk(data: string, id = '', eventType = 'message') {
+  let text = '';
+  if (eventType !== 'message') text += `event: ${eventType}\n`;
+  text += `data: ${data}\n`;
+  if (id) text += `id: ${id}\n`;
+  text += '\n';
+  __emit('sse_chunk', { streamId: lastStreamId(), chunk: text, byteLength: text.length });
 }
+const emitMsg = emitChunk;
 function emitError(isFatal = false, errorCode = 'NETWORK_ERROR') {
   __emit('sse_error', { streamId: lastStreamId(), message: 'err', isFatal, errorCode });
 }
@@ -38,12 +44,13 @@ describe('StreamMetrics', () => {
     sse.close();
   });
 
-  it('tracks bytesReceived from native byteLength', () => {
+  it('tracks bytesReceived from raw SSE chunk byte length', () => {
     const sse = new NativeSSE(URL);
     emitOpen();
-    emitMsg('hello', '', 5);
-    emitMsg('world', '', 5);
-    expect(sse.getMetrics().bytesReceived).toBe(10);
+    // Each chunk: "data: hello\n\n" = 13 bytes
+    emitMsg('hello');
+    emitMsg('world');
+    expect(sse.getMetrics().bytesReceived).toBe(26);
     sse.close();
   });
 

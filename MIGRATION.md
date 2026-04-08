@@ -13,14 +13,12 @@ Every new capability is opt-in through new options or new methods.
 
 V1 exposed only three ready states (`CONNECTING = 0`, `OPEN = 1`, `CLOSED = 2`).
 
-V2 adds a string `state` property with 7 values:
+V2 adds a string `state` property with 8 values:
 
 ```
-idle → connecting → open → reconnecting → connecting (loop)
-                          ↕
-                       paused
-                          ↕
-                       connecting (resume)
+idle → connecting → open → stale → reconnecting → connecting (loop)
+                        ↕
+                     paused ↔ connecting (resume)
 
 Any state → closed   (explicit close — terminal)
 Any state → failed   (max retries exceeded — terminal)
@@ -31,9 +29,11 @@ Any state → failed   (max retries exceeded — terminal)
 sse.readyState; // 0 | 1 | 2
 
 // V2 — fine-grained
-sse.state; // 'idle' | 'connecting' | 'open' | 'reconnecting' | 'paused' | 'closed' | 'failed'
+sse.state; // 'idle' | 'connecting' | 'open' | 'stale' | 'reconnecting' | 'paused' | 'closed' | 'failed'
+
 import { SSE_STATE } from 'jose-native-sse';
 if (sse.state === SSE_STATE.RECONNECTING) showReconnectingSpinner();
+if (sse.state === SSE_STATE.STALE)        showStaleBadge();
 ```
 
 ### 2. Advanced reconnect policies
@@ -54,11 +54,11 @@ const sse = new NativeSSE(url, {
 // V2 — exponential backoff with jitter (recommended for production)
 const sse = new NativeSSE(url, {
   reconnectPolicy: {
-    type: 'exponential',
+    type:      'exponential',
     initialMs: 1000,
-    maxMs: 30000,
-    factor: 2,
-    jitter: true,   // default: true — prevents thundering herd
+    maxMs:     30000,
+    factor:    2,
+    jitter:    true, // default: true — prevents thundering herd
   },
 });
 ```
@@ -80,11 +80,12 @@ sse.onerror = (e) => {
       if (e.statusCode === 401) return logout();
       break;
     case 'TIMEOUT_ERROR':
+      // Includes stale connection reconnects.
       return showTimeoutMessage();
     case 'MAX_RETRIES_EXCEEDED':
       return showOfflineMode();
     case 'NETWORK_ERROR':
-      // e.retryable === true → the library will reconnect automatically
+      // e.retryable === true → the library will reconnect automatically.
       break;
   }
 };
@@ -118,47 +119,102 @@ sse.resume();  // state → 'connecting'
 
 ```ts
 const sse = new NativeSSE(url, {
-  pauseOnBackground: true,  // automatically pause when app goes to background
-                             // and resume when it comes to foreground
+  pauseOnBackground: true,
+  // 'pause' (default): auto-resume when app returns to foreground.
+  // 'disconnect': requires manual sse.resume() on foreground.
+  backgroundBehavior: 'pause',
 });
 ```
 
-### 6. Stream metrics
+### 6. Stale connection detection
+
+Some proxies and mobile NAT environments silently drop TCP connections,
+leaving the client in a zombie state. `staleTimeoutMs` reconnects automatically
+if no data is received within the configured window:
 
 ```ts
-const metrics = sse.getMetrics();
+const sse = new NativeSSE(url, {
+  staleTimeoutMs: 30_000, // reconnect if no data for 30 s
+});
+
+// state transitions: OPEN → STALE → RECONNECTING → CONNECTING
+// onerror fires with code: 'TIMEOUT_ERROR', retryable: true
+```
+
+### 7. Network awareness
+
+```ts
+// Option A — automatic (requires @react-native-community/netinfo)
+const sse = new NativeSSE(url, {
+  networkAwareness: true,
+});
+
+// Option B — manual observer (integrate any network library)
+const sse = new NativeSSE(url, {
+  networkObserver: {
+    subscribe: (cb) =>
+      NetInfo.addEventListener((state) => cb(!!state.isConnected)),
+  },
+});
+```
+
+When the device goes offline, pending reconnect timers are suspended.
+When connectivity is restored, reconnect happens immediately (bypassing backoff).
+
+### 8. Last-Event-ID persistence
+
+```ts
+import { AsyncStorageAdapter } from 'jose-native-sse';
+
+const sse = new NativeSSE(url, {
+  persistLastEventId: true,
+  storageAdapter: new AsyncStorageAdapter(), // requires @react-native-async-storage/async-storage
+  storageKey: 'my-stream:last-event-id',
+});
+```
+
+### 9. Transport selection
+
+```ts
+const sse = new NativeSSE(url, {
+  transport: 'auto',   // default: native when available, XHR otherwise
+  // 'native' | 'xhr' | 'fetch'
+});
+```
+
+### 10. Stream metrics
+
+```ts
+const m = sse.getMetrics();
 // {
-//   bytesReceived: number;
-//   eventsReceived: number;
-//   reconnectCount: number;
-//   lastEventId: string;
+//   bytesReceived:      number;       — raw SSE chunk bytes
+//   eventsReceived:     number;
+//   reconnectCount:     number;
+//   staleCount:         number;       — zombie reconnects detected
+//   lastEventId:        string;
 //   lastEventTimestamp: number | null;
-//   lastError: SseError | null;
-//   connectedAt: number | null;
+//   lastError:          SseError | null;
+//   connectedAt:        number | null;
 // }
 ```
 
-### 7. Batching (AI / high-frequency streams)
-
-For streams delivering many events per second (e.g. AI token streaming):
+### 11. Batching (AI / high-frequency streams)
 
 ```ts
 const sse = new NativeSSE(url, {
   batch: {
-    enabled: true,
-    flushIntervalMs: 50,   // flush every ~50 ms (3 frames at 60 Hz)
-    maxBatchSize: 100,     // or immediately when 100 events accumulate
+    enabled:         true,
+    flushIntervalMs: 50,
+    maxBatchSize:    100,
   },
 });
 
-// onbatch delivers an array — one React setState per flush cycle
 sse.onbatch = (events) => {
   setOutput(prev => prev + events.map(e => e.data).join(''));
 };
-// onmessage still works alongside onbatch if you need per-event callbacks
 ```
 
-### 8. Multi-stream manager
+### 12. Multi-stream manager
 
 ```ts
 import { SseStreamManager } from 'jose-native-sse';
@@ -167,36 +223,36 @@ const manager = new SseStreamManager();
 const chat     = manager.create('chat',     'https://api.example.com/chat');
 const presence = manager.create('presence', 'https://api.example.com/presence');
 
-chat.onmessage = handleChat;
-presence.onmessage = handlePresence;
-
-// Aggregate operations
 manager.pauseAll();
 manager.resumeAll();
 manager.closeAll();
 
-// Observability
 const { totalEventsReceived, totalBytesReceived } = manager.getAggregateMetrics();
 ```
 
-### 9. Buffer overflow protection
+### 13. Buffer overflow protection
 
 V1 had no line length limit — a broken server could cause OOM.
 
 V2 defaults to a 1 MB per-line limit. Oversized lines are dropped and reported
-via `onerror` with `code: 'PARSE_ERROR'`.
+via `onerror` with `code: 'PARSE_ERROR'`:
 
 ```ts
-// Override the limit
 const sse = new NativeSSE(url, {
-  maxLineLength: 65536, // 64 KB
+  maxLineLength: 65_536, // 64 KB
 });
 ```
 
-### 10. iOS now uses Swift
+### 14. iOS now uses Swift
 
 The iOS native layer was rewritten from Objective-C to Swift (`SseConnection.swift`).
 The public JS API is unchanged. No action required.
+
+### 15. Thin transport — single JS parser
+
+The native layers (Swift / Kotlin) no longer parse SSE. They forward raw UTF-8
+text chunks to JavaScript. A single `SseParser.ts` handles all parsing for every
+transport (native, XHR, Fetch), ensuring identical behaviour across platforms.
 
 ---
 
@@ -219,5 +275,7 @@ are additions to a plain object, existing handlers that only read `message` or
 - [ ] Switch to `sse.state` instead of `sse.readyState` for UI state mapping
 - [ ] Add `code` handling to `onerror` for better error differentiation
 - [ ] Enable `pauseOnBackground: true` for streams that should survive app backgrounding
+- [ ] Add `staleTimeoutMs: 30_000` if your server / network may silently drop connections
+- [ ] Enable `networkAwareness: true` to suspend reconnects while offline
 - [ ] Wrap multiple streams in `SseStreamManager`
 - [ ] For AI/token streams, enable `batch` mode and use `onbatch`

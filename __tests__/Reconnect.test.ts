@@ -217,9 +217,8 @@ describe('NativeSSE – maxReconnectAttempts', () => {
     });
     emitOpen();
     // Server sends retry: 8000
-    __emit('sse_message', {
-      streamId: lastStreamId(), eventType: '__retry__', data: '8000',
-      id: '', byteLength: 0, retry: 8_000,
+    __emit('sse_chunk', {
+      streamId: lastStreamId(), chunk: 'retry: 8000\n\n', byteLength: 13,
     });
     emitError();
 

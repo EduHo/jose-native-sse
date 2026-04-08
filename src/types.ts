@@ -15,6 +15,11 @@ export const SSE_STATE = {
   CONNECTING:   'connecting',
   /** Streaming; receiving events. */
   OPEN:         'open',
+  /**
+   * No data received within staleTimeoutMs. The native connection is being
+   * torn down and a reconnect will be scheduled immediately after.
+   */
+  STALE:        'stale',
   /** Waiting for the reconnect timer before the next attempt. */
   RECONNECTING: 'reconnecting',
   /** Paused by pause() or app backgrounding. Will resume on resume(). */
@@ -101,6 +106,8 @@ export interface StreamMetrics {
   eventsReceived: number;
   /** Number of reconnect attempts since the stream was created. */
   reconnectCount: number;
+  /** Number of times a stale/zombie connection was detected. */
+  staleCount: number;
   /** Value of the most recent `id:` field received. */
   lastEventId: string;
   /** Unix timestamp (ms) of the most recent event, or null. */
@@ -109,6 +116,20 @@ export interface StreamMetrics {
   lastError: SseError | null;
   /** Unix timestamp (ms) of the most recent sse_open, or null. */
   connectedAt: number | null;
+}
+
+// ─── Storage adapter (for Last-Event-ID persistence) ─────────────────────────
+
+/**
+ * Minimal async key-value interface for persisting the last event ID.
+ *
+ * Built-in implementations: `InMemoryStorageAdapter` (default) and
+ * `AsyncStorageAdapter` (requires @react-native-async-storage/async-storage).
+ */
+export interface StorageAdapter {
+  getItem(key: string): Promise<string | null>;
+  setItem(key: string, value: string): Promise<void>;
+  removeItem(key: string): Promise<void>;
 }
 
 // ─── Network observer (pluggable, no hard dependency) ────────────────────────
@@ -190,6 +211,53 @@ export interface SseConnectOptions {
    */
   networkObserver?: NetworkObserver;
 
+  // ── Auto network awareness (netinfo) ─────────────────────────────────────
+  /**
+   * Automatically integrate with @react-native-community/netinfo (optional
+   * peer dependency). When true:
+   *  - Pending reconnect timers are cancelled while offline.
+   *  - Reconnect happens immediately (bypassing backoff) when connectivity
+   *    is restored.
+   * Silently disabled if netinfo is not installed.
+   * Default: false.
+   *
+   * Note: If `networkObserver` is also provided, it takes precedence.
+   */
+  networkAwareness?: boolean;
+
+  // ── Last-Event-ID persistence ─────────────────────────────────────────────
+  /**
+   * Persist the last received event ID to storage so that reconnects after an
+   * app restart resume from where they left off.
+   * Default: false (in-memory only, lost on restart).
+   */
+  persistLastEventId?: boolean;
+  /**
+   * Storage key used to persist the last event ID.
+   * Default: 'sse:last-event-id'.
+   */
+  storageKey?: string;
+  /**
+   * Storage adapter for last-event-id persistence.
+   * Default: `InMemoryStorageAdapter`.
+   * Use `AsyncStorageAdapter` for cross-restart persistence (requires
+   * @react-native-async-storage/async-storage).
+   */
+  storageAdapter?: StorageAdapter;
+
+  // ── Transport selection ──────────────────────────────────────────────────
+  /**
+   * Which transport to use for the SSE connection.
+   *
+   * - `'auto'` (default): native TurboModule when available, XHR otherwise.
+   * - `'native'`: always use the native TurboModule (throws at runtime if absent).
+   * - `'xhr'`: always use XHR — useful for Expo Go or explicit fallback testing.
+   * - `'fetch'`: Fetch API + `ReadableStream.getReader()`. No `responseText`
+   *   accumulation in memory, ideal for long-lived streams on RN 0.71+ / Hermes.
+   *   Falls back to XHR if `response.body` is unavailable.
+   */
+  transport?: 'auto' | 'native' | 'xhr' | 'fetch';
+
   // ── Lifecycle ─────────────────────────────────────────────────────────────
   /**
    * When false (default), connect() is called automatically in the constructor.
@@ -197,11 +265,23 @@ export interface SseConnectOptions {
    */
   autoConnect?: boolean;
   /**
-   * Pause the stream when the app goes to the background or becomes inactive,
-   * and resume it when the app becomes active again.
+   * Pause the stream when the app goes to the background or becomes inactive.
    * Default: false.
+   *
+   * @see backgroundBehavior to control what happens when the app returns to
+   * the foreground.
    */
   pauseOnBackground?: boolean;
+  /**
+   * Controls what happens when the app goes to the background (requires
+   * `pauseOnBackground: true`).
+   *
+   * - `'pause'` (default): stream is paused and **automatically resumed**
+   *   when the app returns to the foreground.
+   * - `'disconnect'`: stream is paused but **not auto-resumed** on foreground.
+   *   Call `resume()` manually when ready.
+   */
+  backgroundBehavior?: 'pause' | 'disconnect';
 
   // ── Batching ──────────────────────────────────────────────────────────────
   /** Batch configuration for high-frequency streams (e.g. AI token streaming). */
@@ -238,14 +318,27 @@ export interface NativeOpenEvent {
   headers: Record<string, string>;
 }
 
+/**
+ * Raw network chunk from the native transport.
+ * The native layer now sends unprocessed text so all SSE parsing lives in JS.
+ */
+export interface NativeChunkEvent {
+  streamId: string;
+  /** Raw SSE text as received from the network (may span multiple lines). */
+  chunk: string;
+  /** UTF-8 byte length of the chunk (counted natively for accurate metrics). */
+  byteLength: number;
+}
+
+/**
+ * Parsed SSE event passed to JS-layer handlers.
+ * Constructed internally from SseParser output; no longer emitted by native.
+ */
 export interface NativeMessageEvent {
   streamId: string;
   eventType: string;
   data: string;
   id: string;
-  /** UTF-8 byte length of data, counted natively. Used to track bytesReceived. */
-  byteLength: number;
-  retry?: number;
 }
 
 export interface NativeErrorEvent {

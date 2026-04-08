@@ -2,6 +2,10 @@
 export { NativeSSE } from './EventSource';
 export { SseStreamManager } from './StreamManager';
 export { SseParser } from './SseParser';
+export { StateMachine } from './StateMachine';
+export { AppLifecycleManager } from './AppLifecycleManager';
+export { NetworkMonitor } from './NetworkMonitor';
+export { AsyncStorageAdapter, InMemoryStorageAdapter } from './storage';
 
 // ─── V1 backward-compatible constants ────────────────────────────────────────
 export { CLOSED, CONNECTING, OPEN } from './types';
@@ -18,6 +22,7 @@ export type {
   FixedReconnectPolicy,
   ExponentialReconnectPolicy,
   NetworkObserver,
+  StorageAdapter,
   // States
   SseReadyState,
   SseState,

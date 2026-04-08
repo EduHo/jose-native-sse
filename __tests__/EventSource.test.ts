@@ -18,19 +18,17 @@ function emitOpen(statusCode = 200) {
   __emit('sse_open', { streamId: lastStreamId(), statusCode, headers: {} });
 }
 
-function emitMessage(
-  data = 'hello',
-  eventType = 'message',
-  id = '',
-  byteLength = data.length,
-  retry?: number,
-) {
-  const payload: Record<string, unknown> = {
-    streamId: lastStreamId(), eventType, data, id, byteLength,
-  };
-  if (retry !== undefined) payload.retry = retry;
-  __emit('sse_message', payload);
+function emitChunk(data = 'hello', eventType = 'message', id = '') {
+  let text = '';
+  if (eventType !== 'message') text += `event: ${eventType}\n`;
+  text += `data: ${data}\n`;
+  if (id) text += `id: ${id}\n`;
+  text += '\n';
+  __emit('sse_chunk', { streamId: lastStreamId(), chunk: text, byteLength: text.length });
 }
+
+// Alias kept for readability in existing tests
+const emitMessage = emitChunk;
 
 function emitError(
   message = 'err',

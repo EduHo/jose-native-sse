@@ -298,6 +298,11 @@ export interface SseOpenEvent {
   origin: string;
 }
 
+export interface SseStateChangeEvent {
+  from: SseState;
+  to: SseState;
+}
+
 export interface SseMessageEvent {
   type: string;
   data: string;

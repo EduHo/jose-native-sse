@@ -30,6 +30,7 @@ export type {
   SseOpenEvent,
   SseMessageEvent,
   SseErrorEvent,
+  SseStateChangeEvent,
   // Errors
   SseError,
   SseErrorCode,

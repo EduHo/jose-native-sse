@@ -23,6 +23,7 @@ import type {
   SseOpenEvent,
   SseReadyState,
   SseState,
+  SseStateChangeEvent,
   StorageAdapter,
   StreamMetrics,
 } from './types';
@@ -163,11 +164,12 @@ export class NativeSSE {
   };
 
   // ── Event handlers ──────────────────────────────────────────────────────────
-  onopen:    ((event: SseOpenEvent)    => void) | null = null;
-  onmessage: ((event: SseMessageEvent) => void) | null = null;
-  onerror:   ((error: SseErrorEvent)   => void) | null = null;
+  onopen:        ((event: SseOpenEvent)        => void) | null = null;
+  onmessage:     ((event: SseMessageEvent)     => void) | null = null;
+  onerror:       ((error: SseErrorEvent)       => void) | null = null;
+  onstatechange: ((event: SseStateChangeEvent) => void) | null = null;
   /** Batch handler: called with an array of events when batch mode is active. */
-  onbatch:   BatchHandler | null = null;
+  onbatch:       BatchHandler | null = null;
 
   private _handlers: Record<string, AnyHandler[]> = {};
 
@@ -259,7 +261,7 @@ export class NativeSSE {
 
   close(): void {
     const prev = this._sm.state;
-    this._sm.transition(SSE_STATE.CLOSED);
+    this._transition(SSE_STATE.CLOSED);
     this._cleanup(/* removeAll */ true);
     if (prev !== SSE_STATE.IDLE && !this._useFallback) {
       NativeNativeSse?.disconnect(this._streamId);
@@ -275,7 +277,7 @@ export class NativeSSE {
       s === SSE_STATE.IDLE
     ) return;
 
-    this._sm.transition(SSE_STATE.PAUSED);
+    this._transition(SSE_STATE.PAUSED);
     this._cleanup();
     if (!this._useFallback) NativeNativeSse?.disconnect(this._streamId);
     this._batcher?.clear();
@@ -303,7 +305,7 @@ export class NativeSSE {
   private _onOpen = (raw: NativeOpenEvent): void => {
     if (raw.streamId !== this._streamId) return;
 
-    this._sm.transition(SSE_STATE.OPEN);
+    this._transition(SSE_STATE.OPEN);
     this._reconnectAttempts = 0;
     this._metrics.connectedAt = Date.now();
     this._resetStaleTimer();
@@ -363,7 +365,7 @@ export class NativeSSE {
 
     const s = this._sm.state;
     if (raw.isFatal || s === SSE_STATE.CLOSED) {
-      this._sm.transition(SSE_STATE.FAILED);
+      this._transition(SSE_STATE.FAILED);
       this._cleanup(true);
     } else if (s !== SSE_STATE.PAUSED) {
       this._scheduleReconnect();
@@ -623,7 +625,7 @@ export class NativeSSE {
 
   private _doConnect(): void {
     this._streamId = nextStreamId();
-    this._sm.transition(SSE_STATE.CONNECTING);
+    this._transition(SSE_STATE.CONNECTING);
 
     if (!this._useFallback) {
       // Re-attach native listeners so they filter on the new streamId.
@@ -716,7 +718,7 @@ export class NativeSSE {
     ) return;
 
     if (this._maxAttempts !== -1 && this._reconnectAttempts >= this._maxAttempts) {
-      this._sm.transition(SSE_STATE.FAILED);
+      this._transition(SSE_STATE.FAILED);
       this._cleanup(true);
       const err = this._makeError('MAX_RETRIES_EXCEEDED', `Max reconnect attempts (${this._maxAttempts}) reached`, undefined, false);
       this._metrics.lastError = err;
@@ -727,7 +729,7 @@ export class NativeSSE {
 
     this._reconnectAttempts += 1;
     this._metrics.reconnectCount += 1;
-    this._sm.transition(SSE_STATE.RECONNECTING);
+    this._transition(SSE_STATE.RECONNECTING);
 
     if (this._networkBlocked) {
       if (this._opts.debug) console.log('[NativeSSE] Offline — will reconnect when network returns.');
@@ -777,6 +779,16 @@ export class NativeSSE {
     }
   };
 
+  // ── State transition (with stateChange event) ───────────────────────────────
+
+  private _transition(next: SseState): void {
+    const from = this._sm.state;
+    this._sm.transition(next);
+    const evt: SseStateChangeEvent = { from, to: next };
+    this.onstatechange?.(evt);
+    this._dispatch('stateChange', evt);
+  }
+
   // ── Event delivery ──────────────────────────────────────────────────────────
 
   private _deliverSingle(evt: SseMessageEvent): void {
@@ -816,7 +828,7 @@ export class NativeSSE {
         console.log(`[NativeSSE] Stale connection detected (no data for ${this._staleTimeoutMs}ms) — reconnecting.`);
       }
 
-      this._sm.transition(SSE_STATE.STALE);
+      this._transition(SSE_STATE.STALE);
       this._metrics.staleCount += 1;
 
       const err = this._makeError('TIMEOUT_ERROR', `No data received for ${this._staleTimeoutMs}ms (stale connection)`, undefined, true);

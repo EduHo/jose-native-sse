@@ -6,7 +6,6 @@
 
 [![npm version](https://img.shields.io/npm/v/jose-native-sse.svg)](https://www.npmjs.com/package/jose-native-sse)
 [![license](https://img.shields.io/npm/l/jose-native-sse.svg)](./LICENSE)
-[![tests](https://img.shields.io/badge/tests-173%20passing-brightgreen.svg)](#)
 [![New Architecture](https://img.shields.io/badge/New%20Architecture-TurboModules-blueviolet.svg)](#new-architecture)
 
 iOS · Android · TypeScript · TurboModules · New Architecture
@@ -15,43 +14,38 @@ iOS · Android · TypeScript · TurboModules · New Architecture
 
 ---
 
-## Why this library?
+## Overview
 
-The browser `EventSource` API does not exist in React Native. Common workarounds use WebSockets (different protocol), polyfills backed by `fetch` (no streaming on Android), or community packages that are not maintained for the New Architecture.
+The browser `EventSource` API does not exist in React Native. Common workarounds use WebSockets (different protocol), polyfills backed by `fetch` (no streaming on Android), or packages that are unmaintained for the New Architecture.
 
-`jose-native-sse` implements the full [WHATWG SSE spec](https://html.spec.whatwg.org/multipage/server-sent-events.html) with a **thin-transport architecture**:
+`jose-native-sse` implements the full [WHATWG SSE spec](https://html.spec.whatwg.org/multipage/server-sent-events.html) with a **thin-transport architecture**: the native layer (Swift on iOS, Kotlin on Android) only handles the HTTP connection and forwards raw UTF-8 chunks to JavaScript. All SSE protocol parsing lives in a single `SseParser.ts` shared by every transport — native, XHR, and Fetch — ensuring identical behaviour across platforms.
 
 | | iOS | Android |
 |---|---|---|
 | **Transport** | `URLSessionDataTask` (Swift) | `OkHttp` streaming (Kotlin) |
 | **Architecture** | TurboModules + Codegen | TurboModules + Codegen |
-| **Native layer** | Forwards raw UTF-8 chunks to JS | Forwards raw UTF-8 chunks to JS |
-| **SSE parsing** | `SseParser.ts` (TypeScript) | `SseParser.ts` (TypeScript) |
-
-The native layer is intentionally thin — it only handles the HTTP connection and byte transfer. All SSE protocol parsing (`data:`, `event:`, `id:`, `retry:` fields, line splitting, event dispatch) lives in a single TypeScript `SseParser` shared by all transports. This eliminates parsing duplication between iOS, Android, XHR and Fetch transports.
-
-**No WebSockets. No polyfills. No fetch hacks.**
 
 ---
 
 ## Features
 
-- ✅ Full SSE spec — `data`, `event`, `id`, `retry` fields
-- ✅ Auto-reconnect with **fixed** or **exponential backoff** policies
-- ✅ `Last-Event-ID` header preserved across reconnects (optionally persisted to storage)
-- ✅ POST / custom headers / request body support
-- ✅ 8-state machine — `idle → connecting → open → stale → reconnecting → paused → closed → failed`
-- ✅ Stale / zombie connection detection with automatic reconnect
-- ✅ Network-awareness — reconnect immediately when connectivity is restored
-- ✅ Pause on app background, resume on foreground
-- ✅ **Batch mode** for AI / high-frequency token streams
-- ✅ Stream metrics — bytes, events, reconnects, stale counts, timestamps
-- ✅ Multi-stream manager
-- ✅ Structured typed errors with error codes
-- ✅ Buffer overflow protection (configurable `maxLineLength`)
-- ✅ Transport selection — native, XHR, Fetch (automatic fallback for Expo Go)
-- ✅ Full TypeScript typings
-- ✅ React Native New Architecture (TurboModules)
+- Full SSE spec — `data`, `event`, `id`, `retry` fields
+- Auto-reconnect with **fixed** or **exponential backoff** policies
+- `Last-Event-ID` preserved across reconnects (optionally persisted to storage)
+- POST / custom headers / request body support
+- 8-state machine — `idle → connecting → open → stale → reconnecting → paused → closed → failed`
+- `stateChange` event — fires on every state transition with `{ from, to }`
+- Stale / zombie connection detection with automatic reconnect
+- Network-awareness — reconnect immediately when connectivity is restored
+- Pause on app background, resume on foreground
+- Batch mode for AI / high-frequency token streams
+- Stream metrics — bytes, events, reconnects, stale counts, timestamps
+- Multi-stream manager
+- Structured typed errors with error codes
+- Buffer overflow protection (configurable `maxLineLength`)
+- Transport selection — native, XHR, Fetch (automatic fallback for Expo Go)
+- Full TypeScript typings
+- React Native New Architecture (TurboModules)
 
 ---
 
@@ -60,7 +54,7 @@ The native layer is intentionally thin — it only handles the HTTP connection a
 1. [Installation](#installation)
 2. [Setup](#setup)
    - [Expo](#expo)
-   - [Bare React Native](#bare-react-native----infoplist)
+   - [Bare React Native](#bare-react-native)
 3. [Quick Start](#quick-start)
 4. [API Reference](#api-reference)
    - [NativeSSE](#nativesse)
@@ -71,23 +65,10 @@ The native layer is intentionally thin — it only handles the HTTP connection a
    - [Metrics](#metrics)
    - [SseStreamManager](#ssestreammanager)
 5. [Recipes](#recipes)
-   - [Basic stream](#basic-stream)
-   - [POST with auth headers](#post-with-auth-headers)
-   - [Exponential backoff](#exponential-backoff)
-   - [AI token streaming](#ai-token-streaming)
-   - [Pause on background](#pause-on-background)
-   - [Stale connection detection](#stale-connection-detection)
-   - [Network awareness](#network-awareness)
-   - [Last-Event-ID persistence](#last-event-id-persistence)
-   - [Transport selection](#transport-selection)
-   - [Multi-stream manager](#multi-stream-manager)
-   - [Custom event types](#custom-event-types)
-   - [React hook](#react-hook)
 6. [TypeScript](#typescript)
 7. [New Architecture](#new-architecture)
-8. [Migrating from V1](#migrating-from-v1)
-9. [Contributing](#contributing)
-10. [License](#license)
+8. [Contributing](#contributing)
+9. [License](#license)
 
 ---
 
@@ -99,71 +80,53 @@ npm install jose-native-sse
 yarn add jose-native-sse
 ```
 
-### Bare React Native
-
-```sh
-cd ios && pod install
-```
-
-No extra Android steps — OkHttp is already bundled with React Native.
-
-### Expo
-
-See the [Expo setup section](#expo-1) below.
-
 ---
 
 ## Setup
 
 ### Expo
 
-The library ships a built-in **Expo config plugin** that handles all native
-configuration automatically.
+The library ships a built-in **Expo config plugin** that handles native configuration automatically during `expo prebuild`.
 
 #### 1. Add the plugin to `app.json` / `app.config.js`
 
 ```json
 {
   "expo": {
-    "plugins": [
-      "jose-native-sse"
-    ]
+    "plugins": ["jose-native-sse"]
   }
 }
 ```
 
-If your SSE server uses plain `http://` (not `https://`), pass `allowCleartext`:
+The plugin always adds the `android.permission.INTERNET` permission to `AndroidManifest.xml`.
+
+If your SSE server uses plain `http://` (not `https://`), pass `allowCleartext: true`:
 
 ```json
 {
   "expo": {
-    "plugins": [
-      ["jose-native-sse", { "allowCleartext": true }]
-    ]
+    "plugins": [["jose-native-sse", { "allowCleartext": true }]]
   }
 }
 ```
 
-This automatically adds `NSAllowsArbitraryLoads` on iOS and
-`android:usesCleartextTraffic="true"` on Android.
+With `allowCleartext: true` the plugin additionally sets:
+- iOS: `NSAllowsArbitraryLoads: true` in `Info.plist`
+- Android: `android:usesCleartextTraffic="true"` on the `<application>` element
 
-#### 2. Build with EAS or run locally
+#### 2. Run prebuild and build
 
 ```sh
-# Development build (recommended — full native module)
+npx expo prebuild
 npx expo run:ios
 npx expo run:android
-
-# Or build with EAS
+# or
 eas build --profile development
 ```
 
 #### Expo Go
 
-The native TurboModule is **not available in Expo Go** (Expo Go does not
-support arbitrary native modules). The library detects this automatically and
-falls back to an **XHR transport** — the same JS API, same reconnect logic,
-same event callbacks. No code changes needed.
+The native TurboModule is not available in Expo Go. The library detects this automatically and falls back to an **XHR transport** — same JS API, same reconnect logic, same event callbacks. No code changes needed.
 
 ```ts
 const sse = new NativeSSE(url, { debug: true });
@@ -177,14 +140,20 @@ if (sse.usingFallback) {
 To force a specific transport for testing:
 
 ```ts
-const sse = new NativeSSE(url, { transport: 'xhr' });   // always XHR
-const sse = new NativeSSE(url, { transport: 'fetch' });  // always Fetch
-const sse = new NativeSSE(url, { transport: 'native' }); // always native (throws in Expo Go)
+new NativeSSE(url, { transport: 'xhr' });    // always XHR
+new NativeSSE(url, { transport: 'fetch' });  // always Fetch API
+new NativeSSE(url, { transport: 'native' }); // always native (throws in Expo Go)
 ```
 
-### Bare React Native — `Info.plist`
+### Bare React Native
 
-If your SSE server uses `http://`, add an App Transport Security exception:
+```sh
+cd ios && pod install
+```
+
+No extra Android steps — OkHttp is already bundled with React Native.
+
+If your SSE server uses `http://`, add the App Transport Security exception to `Info.plist`:
 
 ```xml
 <key>NSAppTransportSecurity</key>
@@ -194,25 +163,19 @@ If your SSE server uses `http://`, add an App Transport Security exception:
 </dict>
 ```
 
-### Bare React Native — `AndroidManifest.xml`
-
-Your app's manifest must declare the `INTERNET` permission:
+Ensure your `AndroidManifest.xml` declares the `INTERNET` permission:
 
 ```xml
 <uses-permission android:name="android.permission.INTERNET" />
 ```
 
-### Register the package (legacy architecture only)
-
-If you are **not** using the New Architecture, register the package manually:
+With the New Architecture enabled, the package registers automatically via Codegen. If you are on the legacy architecture, register it manually:
 
 ```kotlin
 // MainApplication.kt
 override fun getPackages(): List<ReactPackage> =
   PackageList(this).packages + listOf(NativeSsePackage())
 ```
-
-With the New Architecture enabled, registration is automatic via Codegen.
 
 ---
 
@@ -250,21 +213,22 @@ const sse = new NativeSSE(url: string, options?: SseConnectOptions)
 | `url` | `string` | The URL passed to the constructor (read-only) |
 | `state` | `SseState` | Fine-grained connection state (8 values) |
 | `readyState` | `0 \| 1 \| 2` | Browser-compat state (`CONNECTING`, `OPEN`, `CLOSED`) |
-| `usingFallback` | `boolean` | `true` when using XHR/Fetch instead of the native module |
+| `usingFallback` | `boolean` | `true` when running on XHR/Fetch instead of the native module |
 | `onopen` | `(e: SseOpenEvent) => void \| null` | Fired when the connection is established |
 | `onmessage` | `(e: SseMessageEvent) => void \| null` | Fired for `event: message` events |
 | `onerror` | `(e: SseErrorEvent) => void \| null` | Fired on errors |
+| `onstatechange` | `(e: SseStateChangeEvent) => void \| null` | Fired on every state transition |
 | `onbatch` | `(events: SseMessageEvent[]) => void \| null` | Fired with batched events (requires `batch.enabled`) |
 
 #### Methods
 
 | Method | Description |
 |---|---|
-| `connect()` | Start the connection. Required when `autoConnect: false`. No-op if already open. |
+| `connect()` | Start the connection. Required when `autoConnect: false`. No-op if already connecting or open. |
 | `close()` | Permanently close the stream. Terminal — instance cannot be reused. |
-| `pause()` | Disconnect without closing. Stream can be resumed with `resume()`. |
+| `pause()` | Disconnect without closing. Resumable with `resume()`. |
 | `resume()` | Reconnect after a `pause()`. No-op if not paused. |
-| `addEventListener(type, listener)` | Add an event listener for any event type. |
+| `addEventListener(type, listener)` | Add a listener for any event type. |
 | `removeEventListener(type, listener)` | Remove a previously added listener. |
 | `getMetrics()` | Returns a `StreamMetrics` snapshot. |
 
@@ -285,48 +249,43 @@ interface SseConnectOptions {
   // ── HTTP ──────────────────────────────────────────────────────────────────
   method?:   'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; // default: 'GET'
   headers?:  Record<string, string>;
-  body?:     string;    // only sent for non-GET requests
-  timeout?:  number;    // request timeout in ms; 0 = none (default)
+  body?:     string;   // only sent for non-GET requests
+  timeout?:  number;   // request timeout in ms; 0 = none (default)
 
   // ── Reconnect ─────────────────────────────────────────────────────────────
-  reconnectPolicy?:      ReconnectPolicy; // see below
-  reconnectInterval?:    number;          // V1 compat — fixed interval in ms
-  maxReconnectAttempts?: number;          // -1 = infinite (default)
+  reconnectPolicy?: ReconnectPolicy;    // see below
+  maxReconnectAttempts?: number;        // -1 = infinite (default)
 
   // ── Stale detection ───────────────────────────────────────────────────────
   staleTimeoutMs?: number;
-  // If no data is received within this many ms, the connection is considered
-  // stale (zombie) and a reconnect is triggered. Resets on every chunk.
-  // 0 = disabled (default). Useful for proxies/NATs that silently drop connections.
+  // Reconnect if no data is received within this many ms.
+  // Resets on every chunk. 0 = disabled (default).
 
   // ── Network awareness ─────────────────────────────────────────────────────
   networkObserver?:  NetworkObserver; // manual observer (takes precedence)
   networkAwareness?: boolean;
-  // When true, auto-integrates with @react-native-community/netinfo.
-  // Pauses reconnect timers while offline; reconnects immediately on restore.
+  // When true, integrates with @react-native-community/netinfo.
+  // Suspends reconnect timers while offline; reconnects immediately on restore.
   // Silently disabled if netinfo is not installed. Default: false.
 
   // ── Transport ─────────────────────────────────────────────────────────────
   transport?: 'auto' | 'native' | 'xhr' | 'fetch';
   // 'auto'   (default): native TurboModule when available, XHR otherwise.
-  // 'native': always use the native TurboModule (throws if absent).
-  // 'xhr':    always use XHR — useful for Expo Go or fallback testing.
-  // 'fetch':  Fetch API + ReadableStream — no responseText accumulation in
-  //           memory; ideal for long-lived streams on RN 0.71+ / Hermes.
+  // 'native': always native (throws at runtime if the module is absent).
+  // 'xhr':    always XHR.
+  // 'fetch':  Fetch API + ReadableStream — no responseText memory accumulation.
   maxLineLength?: number; // max bytes per SSE line; default: 1 048 576 (1 MB)
 
   // ── Last-Event-ID persistence ─────────────────────────────────────────────
   persistLastEventId?: boolean;
-  // Persist the last event ID to storage so reconnects after an app restart
-  // resume from where they left off. Default: false (in-memory only).
-  storageKey?:     string;         // storage key; default: 'sse:last-event-id'
+  // Persist the last event ID so reconnects after an app restart resume
+  // from where they left off. Default: false (in-memory only).
+  storageKey?:     string;         // default: 'sse:last-event-id'
   storageAdapter?: StorageAdapter; // default: InMemoryStorageAdapter
-  // Use AsyncStorageAdapter for cross-restart persistence:
-  // import { AsyncStorageAdapter } from 'jose-native-sse';
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
   autoConnect?:        boolean;              // default: true
-  pauseOnBackground?:  boolean;              // default: false
+  pauseOnBackground?:  boolean;             // default: false
   backgroundBehavior?: 'pause' | 'disconnect';
   // 'pause' (default): auto-resume when app returns to foreground.
   // 'disconnect': pause only — resume() must be called manually.
@@ -334,11 +293,11 @@ interface SseConnectOptions {
   // ── Batching ──────────────────────────────────────────────────────────────
   batch?: {
     enabled:          boolean;
-    flushIntervalMs?: number; // default: 16 ms (one animation frame)
-    maxBatchSize?:    number; // default: 50 — flush immediately when full
+    flushIntervalMs?: number; // default: 16 ms
+    maxBatchSize?:    number; // default: 50
   };
 
-  debug?: boolean; // log reconnect/stale/network events to console
+  debug?: boolean; // log reconnect / stale / network events to console
 }
 ```
 
@@ -354,8 +313,8 @@ type FixedReconnectPolicy = {
 // Exponential backoff — delay = min(initial × factor^attempt, max)
 type ExponentialReconnectPolicy = {
   type:      'exponential';
-  initialMs: number;  // starting delay (e.g. 1 000)
-  maxMs:     number;  // cap (e.g. 30 000)
+  initialMs: number;  // starting delay
+  maxMs:     number;  // cap
   factor?:   number;  // multiplier per attempt; default: 2
   jitter?:   boolean; // ±20 % randomisation; default: true
 };
@@ -367,16 +326,6 @@ type ExponentialReconnectPolicy = {
 interface NetworkObserver {
   subscribe(onStateChange: (isConnected: boolean) => void): () => void;
 }
-
-// Example with @react-native-community/netinfo
-import NetInfo from '@react-native-community/netinfo';
-
-const sse = new NativeSSE(url, {
-  networkObserver: {
-    subscribe: (cb) =>
-      NetInfo.addEventListener((state) => cb(!!state.isConnected)),
-  },
-});
 ```
 
 #### Storage adapter interface
@@ -397,7 +346,7 @@ interface StorageAdapter {
          new()    ┌──────────┐  connect()  ┌─────────────┐
         ────────► │   IDLE   ├────────────►│ CONNECTING  │
                   └──────────┘             └──────┬──────┘
-                                                  │ sse_open
+                                                  │ open
                                                   ▼
                                            ┌─────────────┐
                                            │    OPEN     │
@@ -426,14 +375,14 @@ interface StorageAdapter {
 ```ts
 import { SSE_STATE } from 'jose-native-sse';
 
-SSE_STATE.IDLE         // 'idle'        — created, connect() not yet called
-SSE_STATE.CONNECTING   // 'connecting'  — HTTP request in flight
-SSE_STATE.OPEN         // 'open'        — streaming, receiving events
-SSE_STATE.STALE        // 'stale'       — no data within staleTimeoutMs; reconnecting
-SSE_STATE.RECONNECTING // 'reconnecting'— waiting for reconnect timer
-SSE_STATE.PAUSED       // 'paused'      — manually or by background; resumes on resume()
-SSE_STATE.CLOSED       // 'closed'      — permanently closed by close()
-SSE_STATE.FAILED       // 'failed'      — max retries exhausted; no further reconnects
+SSE_STATE.IDLE         // 'idle'         — created, connect() not yet called
+SSE_STATE.CONNECTING   // 'connecting'   — HTTP request in flight
+SSE_STATE.OPEN         // 'open'         — streaming, receiving events
+SSE_STATE.STALE        // 'stale'        — no data within staleTimeoutMs; reconnecting
+SSE_STATE.RECONNECTING // 'reconnecting' — waiting for reconnect timer
+SSE_STATE.PAUSED       // 'paused'       — manually or by background; resumes on resume()
+SSE_STATE.CLOSED       // 'closed'       — permanently closed by close()
+SSE_STATE.FAILED       // 'failed'       — max retries exhausted; no further reconnects
 ```
 
 ---
@@ -460,26 +409,57 @@ sse.onmessage = (e: SseMessageEvent) => {
 };
 ```
 
-`onmessage` is only called for events with `event: message` (or no `event:` field).
-For custom event types use `addEventListener`.
+`onmessage` fires only for events with `event: message` or no `event:` field. Use `addEventListener` for custom event types.
 
 #### `onerror` / `'error'`
 
 ```ts
 sse.onerror = (e: SseErrorEvent) => {
-  // e.code       → SseErrorCode (see below)
+  // e.code       → SseErrorCode
   // e.message    → human-readable description
-  // e.statusCode → HTTP status for HTTP_ERROR
+  // e.statusCode → HTTP status (HTTP_ERROR only)
   // e.timestamp  → Date.now() at the time of error
-  // e.retryable  → true if the library will auto-reconnect
+  // e.retryable  → true if the library will reconnect automatically
 };
 ```
+
+#### `onstatechange` / `'stateChange'`
+
+Fires on every state transition with both the previous and the new state. Use this to keep UI state always in sync with the connection lifecycle — including transitions to `'stale'` and `'paused'` that are not signalled by any other event.
+
+```ts
+sse.onstatechange = (e: SseStateChangeEvent) => {
+  // e.from → previous SseState
+  // e.to   → new SseState
+  setSseState(e.to);
+};
+
+// addEventListener variant — supports multiple listeners
+sse.addEventListener('stateChange', ({ from, to }) => {
+  console.log(`${from} → ${to}`);
+});
+```
+
+Example transitions:
+
+| Trigger | from | to |
+|---|---|---|
+| `connect()` called | `idle` | `connecting` |
+| Server responds | `connecting` | `open` |
+| No data for `staleTimeoutMs` | `open` | `stale` |
+| Reconnect scheduled | `stale` | `reconnecting` |
+| Timer fires | `reconnecting` | `connecting` |
+| Reconnect succeeds | `connecting` | `open` |
+| `pause()` called | `open` | `paused` |
+| `resume()` called | `paused` | `connecting` |
+| `close()` called | any | `closed` |
+| Max retries exceeded | `reconnecting` | `failed` |
 
 #### `onbatch` — batch mode only
 
 ```ts
 sse.onbatch = (events: SseMessageEvent[]) => {
-  // Receives an array of events flushed in one batch tick.
+  // Called with an array of events flushed in one batch tick.
 };
 ```
 
@@ -510,7 +490,6 @@ type SseErrorCode =
 ```ts
 sse.onerror = (e) => {
   if (!e.retryable) {
-    // The library will NOT reconnect — handle the failure in your UI.
     switch (e.code) {
       case 'HTTP_ERROR':
         if (e.statusCode === 401) return refreshTokenAndReconnect();
@@ -522,7 +501,7 @@ sse.onerror = (e) => {
         return showConfigError();
     }
   }
-  // e.retryable === true → library is already scheduling the next attempt
+  // e.retryable === true → library is scheduling the next attempt automatically
 };
 ```
 
@@ -533,33 +512,29 @@ sse.onerror = (e) => {
 ```ts
 const m = sse.getMetrics();
 
-m.bytesReceived      // number       — total raw SSE bytes received (including field names)
-m.eventsReceived     // number       — total events dispatched to handlers
-m.reconnectCount     // number       — total reconnect attempts (lifetime)
-m.staleCount         // number       — number of stale/zombie connections detected
-m.lastEventId        // string       — last received id: field value
+m.bytesReceived      // number        — raw SSE bytes received (including field names)
+m.eventsReceived     // number        — total events dispatched to handlers
+m.reconnectCount     // number        — total reconnect attempts
+m.staleCount         // number        — number of stale/zombie connections detected
+m.lastEventId        // string        — last received id: field value
 m.lastEventTimestamp // number | null — Date.now() of last received event
-m.lastError          // SseError | null — last error that occurred
+m.lastError          // SseError | null
 m.connectedAt        // number | null — Date.now() of last successful open
 ```
 
-`getMetrics()` always returns a **snapshot** — mutating the returned object does not affect the stream.
-
-> **Note on `bytesReceived`:** This counts raw SSE chunk bytes as received from the network, including protocol overhead (`data: `, `event: `, field names, newlines). It reflects actual network traffic, not just payload size.
+`getMetrics()` returns a snapshot — mutating the returned object has no effect.
 
 ---
 
 ### SseStreamManager
 
-Manages multiple named SSE streams with aggregate lifecycle operations.
+Manages multiple named SSE streams.
 
 ```ts
 import { SseStreamManager } from 'jose-native-sse';
 
 const manager = new SseStreamManager();
 ```
-
-#### Methods
 
 | Method | Returns | Description |
 |---|---|---|
@@ -590,7 +565,6 @@ sse.onopen    = ()  => setConnected(true);
 sse.onmessage = (e) => addMessage(e.data);
 sse.onerror   = (e) => console.error(e.code, e.message);
 
-// Cleanup on unmount
 return () => sse.close();
 ```
 
@@ -602,10 +576,10 @@ return () => sse.close();
 const sse = new NativeSSE('https://api.example.com/stream', {
   method:  'POST',
   headers: {
-    Authorization: 'Bearer eyJ...',
+    Authorization:  'Bearer eyJ...',
     'Content-Type': 'application/json',
   },
-  body: JSON.stringify({ channel: 'updates', filter: 'all' }),
+  body: JSON.stringify({ channel: 'updates' }),
 });
 ```
 
@@ -617,235 +591,20 @@ const sse = new NativeSSE('https://api.example.com/stream', {
 const sse = new NativeSSE('https://api.example.com/stream', {
   reconnectPolicy: {
     type:      'exponential',
-    initialMs: 1_000,   // start with 1 s
-    maxMs:     30_000,  // cap at 30 s
-    factor:    2,       // double each time
-    jitter:    true,    // ±20 % randomisation (default: true)
+    initialMs: 1_000,
+    maxMs:     30_000,
+    factor:    2,
+    jitter:    true,
   },
   maxReconnectAttempts: 20,
 });
 ```
 
-Retry schedule (no jitter): 1 s → 2 s → 4 s → 8 s → 16 s → 30 s → 30 s → …
+Schedule (no jitter): 1 s → 2 s → 4 s → 8 s → 16 s → 30 s → 30 s → …
 
 ---
 
-### AI token streaming
-
-For high-frequency streams (e.g. LLM token output), batch mode reduces React
-re-renders from one-per-token to one-per-animation-frame:
-
-```ts
-const sse = new NativeSSE('https://api.example.com/chat/completions', {
-  method: 'POST',
-  headers: { Authorization: 'Bearer sk-...' },
-  body: JSON.stringify({ model: 'gpt-4o', stream: true, messages }),
-  batch: {
-    enabled:         true,
-    flushIntervalMs: 50,  // flush every 50 ms (~20 Hz)
-    maxBatchSize:    100, // or immediately when 100 tokens accumulate
-  },
-});
-
-sse.onbatch = (events) => {
-  // One setState for potentially dozens of tokens.
-  setOutput(prev => prev + events.map(e => e.data).join(''));
-};
-```
-
----
-
-### Pause on background
-
-```ts
-const sse = new NativeSSE('https://api.example.com/stream', {
-  pauseOnBackground: true,
-  // 'pause' (default): auto-resume when app returns to foreground.
-  // 'disconnect': requires manual sse.resume() on foreground.
-  backgroundBehavior: 'pause',
-});
-```
-
-Manual control:
-
-```ts
-sse.pause();   // state → 'paused'; connection torn down
-sse.resume();  // state → 'connecting'; Last-Event-ID preserved
-```
-
----
-
-### Stale connection detection
-
-Some proxies and mobile NATs silently drop TCP connections without sending a
-FIN, leaving the app in a zombie "open" state that never receives events.
-`staleTimeoutMs` detects this by reconnecting if no data arrives within the
-given window:
-
-```ts
-const sse = new NativeSSE('https://api.example.com/stream', {
-  staleTimeoutMs: 30_000, // reconnect if no data for 30 seconds
-  debug: true,            // logs "[NativeSSE] Stale connection detected..."
-});
-
-sse.onerror = (e) => {
-  if (e.code === 'TIMEOUT_ERROR') {
-    // Fired when a stale connection is detected.
-    // e.retryable === true — the library will reconnect automatically.
-  }
-};
-```
-
-The timer resets on every received chunk. If the server sends regular
-heartbeat comments (`: ping\n\n`), those also reset the timer.
-
-Check `sse.getMetrics().staleCount` to observe how often stale reconnects occur.
-
----
-
-### Network awareness
-
-Prevent wasted reconnect attempts while the device is offline, and reconnect
-immediately the moment connectivity is restored:
-
-#### Automatic (requires `@react-native-community/netinfo`)
-
-```sh
-npm install @react-native-community/netinfo
-```
-
-```ts
-const sse = new NativeSSE('https://api.example.com/stream', {
-  networkAwareness: true,
-  // Reconnect timer is suspended while offline.
-  // Reconnects immediately when connectivity is restored.
-  // Silently disabled if netinfo is not installed.
-});
-```
-
-#### Manual observer
-
-Integrate any network library with the `NetworkObserver` interface:
-
-```ts
-import NetInfo from '@react-native-community/netinfo';
-
-const sse = new NativeSSE('https://api.example.com/stream', {
-  networkObserver: {
-    subscribe: (cb) =>
-      NetInfo.addEventListener((state) => cb(!!state.isConnected)),
-  },
-});
-```
-
----
-
-### Last-Event-ID persistence
-
-By default, `Last-Event-ID` is preserved only for the lifetime of the JS
-process. Enable persistence to resume from the correct position after an
-app restart:
-
-```ts
-import { AsyncStorageAdapter } from 'jose-native-sse';
-
-const sse = new NativeSSE('https://api.example.com/stream', {
-  persistLastEventId: true,
-  storageAdapter: new AsyncStorageAdapter(), // requires @react-native-async-storage/async-storage
-  storageKey: 'my-stream:last-event-id',    // optional; default: 'sse:last-event-id'
-});
-```
-
-```sh
-npm install @react-native-async-storage/async-storage
-```
-
----
-
-### Transport selection
-
-```ts
-// Default: native TurboModule when available, XHR when not (e.g. Expo Go)
-const sse = new NativeSSE(url, { transport: 'auto' });
-
-// Force native (throws at runtime if the native module is absent)
-const sse = new NativeSSE(url, { transport: 'native' });
-
-// Force XHR — useful for Expo Go or explicit fallback testing
-const sse = new NativeSSE(url, { transport: 'xhr' });
-
-// Fetch API + ReadableStream — no responseText memory accumulation;
-// ideal for very long-lived streams on RN 0.71+ / Hermes
-const sse = new NativeSSE(url, { transport: 'fetch' });
-
-// Check at runtime which transport is active
-if (sse.usingFallback) {
-  console.log('Running on XHR/Fetch fallback (Expo Go or native module absent)');
-}
-```
-
----
-
-### Multi-stream manager
-
-```ts
-import { SseStreamManager } from 'jose-native-sse';
-
-const manager = new SseStreamManager();
-
-const chat = manager.create('chat', 'https://api.example.com/chat/events', {
-  headers: { Authorization: `Bearer ${token}` },
-  reconnectPolicy: { type: 'exponential', initialMs: 1000, maxMs: 30000 },
-});
-
-const presence = manager.create('presence', 'https://api.example.com/presence');
-
-chat.onmessage     = (e) => handleChatMessage(JSON.parse(e.data));
-presence.onmessage = (e) => updatePresence(JSON.parse(e.data));
-
-// App goes to background — pause everything
-manager.pauseAll();
-
-// App returns — resume everything
-manager.resumeAll();
-
-// User logs out — close everything
-manager.closeAll();
-
-// Observability
-const { totalEventsReceived, totalBytesReceived, totalReconnects } =
-  manager.getAggregateMetrics();
-```
-
----
-
-### Custom event types
-
-```ts
-// Server sends:
-// event: user-joined
-// data: {"userId":"abc","name":"Alice"}
-//
-// event: user-left
-// data: {"userId":"abc"}
-
-sse.addEventListener('user-joined', (e) => {
-  const user = JSON.parse(e.data);
-  addUser(user);
-});
-
-sse.addEventListener('user-left', (e) => {
-  const { userId } = JSON.parse(e.data);
-  removeUser(userId);
-});
-```
-
-> **Note:** `onmessage` only fires for events with `event: message` or no `event:` field.
-> Always use `addEventListener` for custom event types.
-
----
-
-### React hook
+### React hook with stateChange
 
 ```tsx
 import { useEffect, useState, useRef } from 'react';
@@ -859,13 +618,14 @@ export function useSSE(url: string, options?: SseConnectOptions) {
   const sseRef              = useRef<NativeSSE | null>(null);
 
   useEffect(() => {
-    const sse = new NativeSSE(url, options);
+    const sse = new NativeSSE(url, { autoConnect: false, ...options });
     sseRef.current = sse;
 
-    sse.onopen    = ()  => { setState(sse.state); setError(null); };
-    sse.onmessage = (e) => { setState(sse.state); setData(e.data); };
-    sse.onerror   = (e) => { setState(sse.state); setError(e.message); };
+    sse.onstatechange = ({ to }) => setState(to);
+    sse.onmessage     = (e)      => setData(e.data);
+    sse.onerror       = (e)      => { if (!e.retryable) setError(e.message); };
 
+    sse.connect();
     return () => sse.close();
   }, [url]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -873,10 +633,10 @@ export function useSSE(url: string, options?: SseConnectOptions) {
 }
 
 // Usage
-function MyComponent() {
+function Feed() {
   const { state, lastData } = useSSE('https://api.example.com/events', {
-    reconnectPolicy: { type: 'exponential', initialMs: 1000, maxMs: 30000 },
-    staleTimeoutMs: 30_000,
+    reconnectPolicy:  { type: 'exponential', initialMs: 1000, maxMs: 30000 },
+    staleTimeoutMs:   30_000,
     networkAwareness: true,
   });
 
@@ -891,13 +651,148 @@ function MyComponent() {
 
 ---
 
+### AI token streaming (batch mode)
+
+Reduces React re-renders from one-per-token to one-per-animation-frame:
+
+```ts
+const sse = new NativeSSE('https://api.example.com/chat/completions', {
+  method:  'POST',
+  headers: { Authorization: 'Bearer sk-...' },
+  body:    JSON.stringify({ model: 'gpt-4o', stream: true, messages }),
+  batch: {
+    enabled:         true,
+    flushIntervalMs: 50,   // flush every 50 ms
+    maxBatchSize:    100,  // or when 100 tokens accumulate
+  },
+});
+
+sse.onbatch = (events) => {
+  setOutput(prev => prev + events.map(e => e.data).join(''));
+};
+```
+
+---
+
+### Pause on background
+
+```ts
+const sse = new NativeSSE('https://api.example.com/stream', {
+  pauseOnBackground:  true,
+  backgroundBehavior: 'pause', // auto-resume on foreground
+});
+
+// Manual control
+sse.pause();  // state → 'paused'
+sse.resume(); // state → 'connecting'
+```
+
+---
+
+### Stale connection detection
+
+Some proxies and mobile NATs silently drop TCP connections, leaving the client in a zombie state. `staleTimeoutMs` reconnects automatically if no data arrives within the configured window:
+
+```ts
+const sse = new NativeSSE('https://api.example.com/stream', {
+  staleTimeoutMs: 30_000,
+});
+
+sse.onerror = (e) => {
+  if (e.code === 'TIMEOUT_ERROR' && e.retryable) {
+    // Stale connection detected — library is already reconnecting.
+  }
+};
+```
+
+The timer resets on every received chunk, including heartbeat comments (`: ping\n\n`).
+
+---
+
+### Network awareness
+
+```ts
+// Automatic — requires @react-native-community/netinfo
+const sse = new NativeSSE(url, { networkAwareness: true });
+
+// Manual observer — integrate any network library
+import NetInfo from '@react-native-community/netinfo';
+
+const sse = new NativeSSE(url, {
+  networkObserver: {
+    subscribe: (cb) =>
+      NetInfo.addEventListener((s) => cb(!!s.isConnected)),
+  },
+});
+```
+
+While offline, pending reconnect timers are suspended. When connectivity is restored, reconnect happens immediately, bypassing the backoff delay.
+
+---
+
+### Last-Event-ID persistence
+
+```ts
+import { AsyncStorageAdapter } from 'jose-native-sse';
+
+const sse = new NativeSSE('https://api.example.com/stream', {
+  persistLastEventId: true,
+  storageAdapter: new AsyncStorageAdapter(), // requires @react-native-async-storage/async-storage
+  storageKey: 'my-stream:last-event-id',
+});
+```
+
+---
+
+### Multi-stream manager
+
+```ts
+import { SseStreamManager } from 'jose-native-sse';
+
+const manager = new SseStreamManager();
+
+const chat = manager.create('chat', 'https://api.example.com/chat/events', {
+  headers: { Authorization: `Bearer ${token}` },
+});
+const presence = manager.create('presence', 'https://api.example.com/presence');
+
+chat.onmessage     = (e) => handleChat(JSON.parse(e.data));
+presence.onmessage = (e) => updatePresence(JSON.parse(e.data));
+
+manager.pauseAll();   // app goes to background
+manager.resumeAll();  // app returns
+manager.closeAll();   // user logs out
+
+const { totalEventsReceived, totalBytesReceived, totalReconnects } =
+  manager.getAggregateMetrics();
+```
+
+---
+
+### Custom event types
+
+```ts
+// Server sends:
+// event: user-joined
+// data: {"userId":"abc","name":"Alice"}
+
+sse.addEventListener('user-joined', (e) => {
+  addUser(JSON.parse(e.data));
+});
+
+sse.addEventListener('user-left', (e) => {
+  removeUser(JSON.parse(e.data).userId);
+});
+```
+
+---
+
 ## TypeScript
 
 All public types are exported from the package root:
 
 ```ts
 import type {
-  // Options
   SseConnectOptions,
   ReconnectPolicy,
   FixedReconnectPolicy,
@@ -906,39 +801,32 @@ import type {
   NetworkObserver,
   StorageAdapter,
 
-  // State
   SseState,
   SseReadyState,
 
-  // Events
   SseOpenEvent,
   SseMessageEvent,
   SseErrorEvent,
+  SseStateChangeEvent,
 
-  // Errors
   SseError,
   SseErrorCode,
 
-  // Metrics
   StreamMetrics,
 
-  // Parser (advanced)
   ParsedEvent,
   SseParserOptions,
 } from 'jose-native-sse';
 ```
 
-#### Advanced — internal building blocks
-
-The internal state management classes are also exported for advanced use cases
-(e.g. building a custom SSE transport or testing):
+Internal building blocks are also exported for advanced use cases (custom transports, testing):
 
 ```ts
 import {
-  StateMachine,        // 8-state finite state machine with transition validation
-  AppLifecycleManager, // React Native AppState subscription encapsulation
-  NetworkMonitor,      // netinfo / manual observer connectivity encapsulation
-  SseParser,           // WHATWG-compliant SSE stream parser
+  StateMachine,
+  AppLifecycleManager,
+  NetworkMonitor,
+  SseParser,
 } from 'jose-native-sse';
 ```
 
@@ -946,9 +834,7 @@ import {
 
 ## New Architecture
 
-The library is built for the React Native New Architecture (TurboModules + Codegen).
-
-**Enable the New Architecture:**
+The library targets the React Native New Architecture (TurboModules + Codegen).
 
 ```ruby
 # ios/Podfile
@@ -960,18 +846,11 @@ use_react_native!(:new_arch_enabled => true)
 newArchEnabled=true
 ```
 
-The Codegen spec is in `src/NativeNativeSse.ts`. The codegen tool reads it at
-build time and generates the C++ / ObjC++ / Kotlin bridge boilerplate
-automatically.
-
-**Legacy Architecture is also supported** — the same JS module detects which
-bridge is available at runtime and uses the appropriate path.
+The Codegen spec is in `src/NativeNativeSse.ts`. The toolchain generates the C++ / ObjC++ / Kotlin bridge at build time. The legacy bridge is also supported — the JS module detects which is available at runtime.
 
 ---
 
 ## Architecture — thin transport
-
-The native layer (Swift on iOS, Kotlin on Android) is intentionally minimal:
 
 ```
   iOS / Android native
@@ -993,52 +872,21 @@ The native layer (Swift on iOS, Kotlin on Android) is intentionally minimal:
   └──────────────────────────────────────────┘
 ```
 
-This means the XHR, Fetch, and native transports all use the **same parser**,
-eliminating any possibility of per-platform parsing differences.
-
----
-
-## Migrating from V1
-
-V2 is fully backward-compatible. See [MIGRATION.md](./MIGRATION.md) for the
-complete guide. Quick summary:
-
-| V1 | V2 equivalent | Notes |
-|---|---|---|
-| `reconnectInterval: 3000` | `reconnectPolicy: { type: 'fixed', intervalMs: 3000 }` | V1 option still works |
-| `sse.readyState` (0/1/2) | `sse.state` (string) | Both work simultaneously |
-| `onerror({ message, statusCode })` | `onerror({ code, message, statusCode, timestamp, retryable })` | Superset — existing handlers work |
-| No pause support | `sse.pause()` / `sse.resume()` | New |
-| No metrics | `sse.getMetrics()` | New |
-| No batch mode | `batch: { enabled: true }` + `onbatch` | New |
-| Multiple `NativeSSE` instances | `SseStreamManager` | New |
-
 ---
 
 ## Contributing
 
-Contributions are welcome!
-
 ```sh
-# Clone and install
 git clone https://github.com/EduardoGoncalves/jose-native-sse.git
 cd jose-native-sse
 npm install
 
-# Run tests
-npm test
-
-# Run tests in watch mode
+npm test          # run tests
 npm test -- --watch
-
-# Type check
 npm run typecheck
 ```
 
-**Before opening a PR:**
-- All 173 tests must pass (`npm test`)
-- New features need tests
-- Follow the existing code style
+Before opening a PR: all tests must pass, new features need tests, follow the existing code style.
 
 ---
 

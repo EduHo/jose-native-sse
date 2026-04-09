@@ -39,14 +39,14 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/EduardoGoncalves/jose-native-sse.git"
+    "url": "git+https://github.com/EduHo/jose-native-sse.git"
   },
   "author": "EduHo <eduardg.geral@gmail.com>",
   "license": "MIT",
   "bugs": {
-    "url": "https://github.com/EduardoGoncalves/jose-native-sse/issues"
+    "url": "https://github.com/EduHo/jose-native-sse/issues"
   },
-  "homepage": "https://github.com/EduardoGoncalves/jose-native-sse#readme",
+  "homepage": "https://github.com/EduHo/jose-native-sse#readme",
   "publishConfig": {
     "registry": "https://registry.npmjs.org/"
   },

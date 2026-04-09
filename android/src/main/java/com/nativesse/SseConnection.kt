@@ -95,7 +95,7 @@ internal class SseConnection(
                         // Read raw bytes and forward as UTF-8 text chunks.
                         // All SSE parsing happens in JS.
                         val buffer = ByteArray(8192)
-                        var bytesRead: Int
+                        var bytesRead = 0
                         while (!cancelled.get() &&
                                bodyStream.read(buffer).also { bytesRead = it } != -1) {
                             val chunk = String(buffer, 0, bytesRead, Charsets.UTF_8)

@@ -1,6 +1,6 @@
 {
   "name": "jose-native-sse",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Native SSE (Server-Sent Events) for React Native using TurboModules (New Architecture)",
   "main": "lib/commonjs/index",
   "module": "lib/module/index",

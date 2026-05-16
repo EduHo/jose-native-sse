@@ -42,9 +42,14 @@ export interface UseNativeSSEResult {
   lastError: SseErrorEvent | null;
   /** Snapshot of stream metrics, updated on each message and state change. */
   metrics: StreamMetrics;
-  pause:  () => void;
-  resume: () => void;
-  close:  () => void;
+  pause:     () => void;
+  resume:    () => void;
+  /**
+   * Force an immediate reconnect without backoff. Use after refreshing an auth
+   * token or when showing a manual "Retry" button. No-op if closed or failed.
+   */
+  reconnect: () => void;
+  close:     () => void;
 }
 
 function stateToReadyState(s: SseState): SseReadyState {
@@ -120,9 +125,10 @@ export function useNativeSSE(
     };
   }, [url, enabled]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const pause  = useCallback(() => sseRef.current?.pause(),  []);
-  const resume = useCallback(() => sseRef.current?.resume(), []);
-  const close  = useCallback(() => sseRef.current?.close(),  []);
+  const pause     = useCallback(() => sseRef.current?.pause(),     []);
+  const resume    = useCallback(() => sseRef.current?.resume(),    []);
+  const reconnect = useCallback(() => sseRef.current?.reconnect(), []);
+  const close     = useCallback(() => sseRef.current?.close(),     []);
 
   return {
     state,
@@ -133,6 +139,7 @@ export function useNativeSSE(
     metrics,
     pause,
     resume,
+    reconnect,
     close,
   };
 }

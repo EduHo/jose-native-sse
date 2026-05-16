@@ -309,6 +309,38 @@ export class NativeSSE {
     this._doConnect();
   }
 
+  /**
+   * Force an immediate reconnect from any non-terminal state, bypassing the
+   * reconnect policy entirely (no backoff delay).
+   *
+   * Unlike automatic reconnects, this does NOT increment the reconnect attempt
+   * counter and does NOT reset `maxReconnectAttempts` tracking — it is treated
+   * as a fresh user-initiated connection.
+   *
+   * Common use cases:
+   *  - Auth token refreshed: update headers externally then call `reconnect()`
+   *    to pick them up on the next request.
+   *  - "Retry" button in UI after a fatal error.
+   *
+   * No-op when state is `closed` or `failed`.
+   */
+  reconnect(): void {
+    const s = this._sm.state;
+    if (s === SSE_STATE.CLOSED || s === SSE_STATE.FAILED) return;
+
+    // Tear down the current connection without permanently closing the stream.
+    this._cleanup();
+    if (s !== SSE_STATE.IDLE && !this._useFallback) {
+      NativeNativeSse?.disconnect(this._streamId);
+    }
+
+    // User-initiated — reset the backoff counter so the next auto-reconnect
+    // after a future error starts from attempt 1 again.
+    this._reconnectAttempts = 0;
+
+    this._doConnect();
+  }
+
   addEventListener(type: string, listener: AnyHandler): void {
     if (!this._handlers[type]) this._handlers[type] = [];
     if (!this._handlers[type]!.includes(listener)) {

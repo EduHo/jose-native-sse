@@ -227,6 +227,7 @@ const sse = new NativeSSE(url: string, options?: SseConnectOptions)
 | Method | Description |
 |---|---|
 | `connect()` | Start the connection. Required when `autoConnect: false`. No-op if already connecting or open. |
+| `reconnect()` | Force an **immediate** reconnect from any non-terminal state, bypassing the reconnect policy (no backoff delay). Resets the attempt counter. Use after refreshing an auth token or for a manual "Retry" button. No-op if `closed` or `failed`. |
 | `close()` | Permanently close the stream. Terminal — instance cannot be reused. |
 | `pause()` | Disconnect without closing. Resumable with `resume()`. |
 | `resume()` | Reconnect after a `pause()`. No-op if not paused. |
@@ -269,6 +270,7 @@ const result = useNativeSSE(url: string, options?: UseNativeSSEOptions)
 | `metrics` | `StreamMetrics` | Snapshot updated on each message and state change. |
 | `pause()` | `() => void` | Pause the stream. |
 | `resume()` | `() => void` | Resume a paused stream. |
+| `reconnect()` | `() => void` | Force an immediate reconnect without backoff. No-op if `closed` or `failed`. |
 | `close()` | `() => void` | Permanently close the stream. |
 
 The connection is opened on mount, closed on unmount, and reconnected when `url` or `enabled` changes.
@@ -684,6 +686,59 @@ The hook re-opens the connection when `url` changes and cleans up on unmount. Pa
 ```tsx
 const { state } = useNativeSSE(url, { enabled: isLoggedIn });
 ```
+
+---
+
+### Token refresh / forced reconnect
+
+Use `reconnect()` when credentials rotate and you need to pick up new headers without destroying the instance:
+
+```tsx
+import { useRef } from 'react';
+import { useNativeSSE } from 'jose-native-sse';
+
+function Feed({ getToken }: { getToken: () => Promise<string> }) {
+  const tokenRef = useRef('');
+  const { state, lastMessage, reconnect } = useNativeSSE(
+    'https://api.example.com/events',
+    {
+      // Headers are re-read from the ref on every (re)connect.
+      get headers() {
+        return { Authorization: `Bearer ${tokenRef.current}` };
+      },
+      onerror: async (e) => {
+        if (e.statusCode === 401) {
+          tokenRef.current = await getToken(); // refresh token
+          reconnect();                         // re-connects immediately with new token
+        }
+      },
+    },
+  );
+
+  return <Text>{lastMessage?.data}</Text>;
+}
+```
+
+Or with the low-level API:
+
+```ts
+let token = await getToken();
+
+const sse = new NativeSSE('https://api.example.com/events', {
+  get headers() {
+    return { Authorization: `Bearer ${token}` };
+  },
+});
+
+sse.onerror = async (e) => {
+  if (e.statusCode === 401) {
+    token = await refreshToken();
+    sse.reconnect(); // immediately re-connects with the new token
+  }
+};
+```
+
+> **Note**: `reconnect()` is a no-op when `state` is `'closed'` or `'failed'`. It works from any other state, including `'open'`, `'reconnecting'`, and `'paused'`.
 
 ---
 

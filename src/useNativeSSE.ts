@@ -33,6 +33,11 @@ export interface UseNativeSSEResult {
   readyState: SseReadyState;
   /** Most recently received message. Null until the first message arrives. */
   lastMessage: SseMessageEvent | null;
+  /**
+   * Most recently flushed batch of events. Only populated when
+   * `batch.enabled: true` is passed in options. Null otherwise.
+   */
+  lastBatch: SseMessageEvent[] | null;
   /** Most recent error. Null if no error has occurred. */
   lastError: SseErrorEvent | null;
   /** Snapshot of stream metrics, updated on each message and state change. */
@@ -71,6 +76,7 @@ export function useNativeSSE(
 
   const [state, setState]             = useState<SseState>(SSE_STATE.IDLE);
   const [lastMessage, setLastMessage] = useState<SseMessageEvent | null>(null);
+  const [lastBatch, setLastBatch]     = useState<SseMessageEvent[] | null>(null);
   const [lastError, setLastError]     = useState<SseErrorEvent | null>(null);
   const [metrics, setMetrics]         = useState<StreamMetrics>(DEFAULT_METRICS);
 
@@ -97,6 +103,10 @@ export function useNativeSSE(
       setLastMessage(evt);
       setMetrics(sse.getMetrics());
     };
+    sse.onbatch = (evts) => {
+      setLastBatch(evts);
+      setMetrics(sse.getMetrics());
+    };
     sse.onerror = (err) => {
       setLastError(err);
       setMetrics(sse.getMetrics());
@@ -118,6 +128,7 @@ export function useNativeSSE(
     state,
     readyState: stateToReadyState(state),
     lastMessage,
+    lastBatch,
     lastError,
     metrics,
     pause,

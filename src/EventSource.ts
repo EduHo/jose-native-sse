@@ -140,6 +140,9 @@ export class NativeSSE {
   private _staleTimer: ReturnType<typeof setTimeout> | null = null;
   private _networkBlocked = false;
   private _subscriptions: EmitterSubscription[] = [];
+  // Reconnect interval sent by the server via `retry:` field.
+  // Overrides the configured policy for all subsequent reconnects.
+  private _serverRetryMs: number | null = null;
 
   // ── Fallback transport state ─────────────────────────────────────────────────
   private _xhr: XMLHttpRequest | null = null;
@@ -176,8 +179,26 @@ export class NativeSSE {
   // ── Constructor ─────────────────────────────────────────────────────────────
 
   constructor(url: string, options: SseConnectOptions = {}) {
+    // Validate URL early — mirrors browser EventSource SyntaxError behaviour.
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new TypeError(`Unsupported protocol "${parsed.protocol}"`);
+      }
+    } catch {
+      throw new TypeError(
+        `[NativeSSE] Invalid URL: "${url}". Must be an absolute URL with http:// or https://.`,
+      );
+    }
+
     const t = options.transport ?? 'auto';
     if (t === 'native') {
+      if (!NativeNativeSse) {
+        throw new Error(
+          '[NativeSSE] transport: "native" was specified but the native module is not available. ' +
+          'Use transport: "auto", "fetch", or "xhr" for Expo Go and unlinked builds.',
+        );
+      }
       this._useFallback  = false;
       this._fallbackType = 'xhr'; // unused
     } else if (t === 'xhr') {
@@ -423,10 +444,7 @@ export class NativeSSE {
           id:        parsed.id ?? '',
         });
       },
-      onRetry: (ms) => {
-        (this._policy as FixedPatch).intervalMs = ms;
-        (this._policy as FixedPatch).type = 'fixed';
-      },
+      onRetry: (ms) => { this._serverRetryMs = ms; },
       onParseError: (reason) => {
         this._onError({
           streamId:  sid,
@@ -519,10 +537,7 @@ export class NativeSSE {
           id:        parsed.id ?? '',
         });
       },
-      onRetry: (ms) => {
-        (this._policy as FixedPatch).intervalMs = ms;
-        (this._policy as FixedPatch).type = 'fixed';
-      },
+      onRetry: (ms) => { this._serverRetryMs = ms; },
       onParseError: (reason) => {
         this._onError({
           streamId:  sid,
@@ -610,6 +625,9 @@ export class NativeSSE {
           });
         } finally {
           reader.releaseLock();
+          // Null the controller ref if this stream is still the active one,
+          // so it can be garbage-collected after natural completion.
+          if (this._fetchController === controller) this._fetchController = null;
         }
       })
       .catch((err: Error) => {
@@ -688,10 +706,7 @@ export class NativeSSE {
           id:        parsed.id ?? '',
         });
       },
-      onRetry: (ms) => {
-        (this._policy as FixedPatch).intervalMs = ms;
-        (this._policy as FixedPatch).type = 'fixed';
-      },
+      onRetry: (ms) => { this._serverRetryMs = ms; },
       onParseError: (reason) => {
         this._onError({
           streamId:  sid,
@@ -740,7 +755,9 @@ export class NativeSSE {
       return;
     }
 
-    const delay = computeDelay(this._policy, this._reconnectAttempts);
+    const delay = this._serverRetryMs !== null
+      ? this._serverRetryMs
+      : computeDelay(this._policy, this._reconnectAttempts);
     this._opts.onReconnectAttempt?.(this._reconnectAttempts, delay);
 
     if (this._opts.debug) {
@@ -909,5 +926,3 @@ export class NativeSSE {
   }
 }
 
-// Internal type alias used for server retry override.
-interface FixedPatch { type: string; intervalMs: number }

@@ -306,9 +306,11 @@ export class NativeSSE {
     if (raw.streamId !== this._streamId) return;
 
     this._transition(SSE_STATE.OPEN);
+    const wasReconnect = this._reconnectAttempts > 0;
     this._reconnectAttempts = 0;
     this._metrics.connectedAt = Date.now();
     this._resetStaleTimer();
+    if (wasReconnect) this._opts.onReconnectSuccess?.();
 
     const evt: SseOpenEvent = { type: 'open', origin: this._url };
     this.onopen?.(evt);
@@ -367,6 +369,7 @@ export class NativeSSE {
     if (raw.isFatal || s === SSE_STATE.CLOSED) {
       this._transition(SSE_STATE.FAILED);
       this._cleanup(true);
+      this._opts.onFatalError?.(err);
     } else if (s !== SSE_STATE.PAUSED) {
       this._scheduleReconnect();
     }
@@ -722,6 +725,7 @@ export class NativeSSE {
       this._cleanup(true);
       const err = this._makeError('MAX_RETRIES_EXCEEDED', `Max reconnect attempts (${this._maxAttempts}) reached`, undefined, false);
       this._metrics.lastError = err;
+      this._opts.onFatalError?.(err);
       this.onerror?.(err);
       this._dispatch('error', err);
       return;
@@ -737,6 +741,7 @@ export class NativeSSE {
     }
 
     const delay = computeDelay(this._policy, this._reconnectAttempts);
+    this._opts.onReconnectAttempt?.(this._reconnectAttempts, delay);
 
     if (this._opts.debug) {
       console.log(
@@ -830,6 +835,7 @@ export class NativeSSE {
 
       this._transition(SSE_STATE.STALE);
       this._metrics.staleCount += 1;
+      this._opts.onStale?.();
 
       const err = this._makeError('TIMEOUT_ERROR', `No data received for ${this._staleTimeoutMs}ms (stale connection)`, undefined, true);
       this._metrics.lastError = err;

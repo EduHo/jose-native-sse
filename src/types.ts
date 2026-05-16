@@ -287,6 +287,23 @@ export interface SseConnectOptions {
   /** Batch configuration for high-frequency streams (e.g. AI token streaming). */
   batch?: BatchConfig;
 
+  // ── Observability callbacks ───────────────────────────────────────────────
+  /**
+   * Called each time a reconnect attempt is scheduled.
+   * @param attempt  The 1-based attempt number.
+   * @param delayMs  Milliseconds until the next connect() is fired.
+   */
+  onReconnectAttempt?: (attempt: number, delayMs: number) => void;
+  /** Called when a reconnect attempt succeeds (connection transitions to OPEN). */
+  onReconnectSuccess?: () => void;
+  /** Called when a stale/zombie connection is detected before reconnecting. */
+  onStale?: () => void;
+  /**
+   * Called when the stream enters a terminal FAILED state (max retries
+   * exceeded or fatal HTTP error). No further reconnects will be attempted.
+   */
+  onFatalError?: (error: SseError) => void;
+
   /** Log reconnect/debug events to console (default: false). */
   debug?: boolean;
 }

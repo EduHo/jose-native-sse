@@ -5,6 +5,7 @@
 **Server-Sent Events for React Native — native, fast, production-ready.**
 
 [![npm version](https://img.shields.io/npm/v/jose-native-sse.svg)](https://www.npmjs.com/package/jose-native-sse)
+[![CI](https://github.com/EduHo/jose-native-sse/actions/workflows/ci.yml/badge.svg)](https://github.com/EduHo/jose-native-sse/actions/workflows/ci.yml)
 [![license](https://img.shields.io/npm/l/jose-native-sse.svg)](./LICENSE)
 [![New Architecture](https://img.shields.io/badge/New%20Architecture-TurboModules-blueviolet.svg)](#new-architecture)
 
@@ -58,6 +59,7 @@ The browser `EventSource` API does not exist in React Native. Common workarounds
 3. [Quick Start](#quick-start)
 4. [API Reference](#api-reference)
    - [NativeSSE](#nativesse)
+   - [useNativeSSE hook](#usenativesse-hook)
    - [Options](#options)
    - [State Machine](#state-machine)
    - [Events](#events)
@@ -242,6 +244,37 @@ NativeSSE.CLOSED     // 2
 
 ---
 
+### useNativeSSE hook
+
+```ts
+import { useNativeSSE } from 'jose-native-sse';
+
+const result = useNativeSSE(url: string, options?: UseNativeSSEOptions)
+```
+
+`UseNativeSSEOptions` extends `SseConnectOptions` with one extra field:
+
+| Field | Type | Default | Description |
+|---|---|---|---|
+| `enabled` | `boolean` | `true` | Set to `false` to skip connecting (useful for auth-gated streams). |
+
+`UseNativeSSEResult`:
+
+| Field | Type | Description |
+|---|---|---|
+| `state` | `SseState` | Current fine-grained connection state. |
+| `readyState` | `0 \| 1 \| 2` | Browser-compatible ready state. |
+| `lastMessage` | `SseMessageEvent \| null` | Most recently received message. |
+| `lastError` | `SseErrorEvent \| null` | Most recent error. |
+| `metrics` | `StreamMetrics` | Snapshot updated on each message and state change. |
+| `pause()` | `() => void` | Pause the stream. |
+| `resume()` | `() => void` | Resume a paused stream. |
+| `close()` | `() => void` | Permanently close the stream. |
+
+The connection is opened on mount, closed on unmount, and reconnected when `url` or `enabled` changes.
+
+---
+
 ### Options
 
 ```ts
@@ -296,6 +329,18 @@ interface SseConnectOptions {
     flushIntervalMs?: number; // default: 16 ms
     maxBatchSize?:    number; // default: 50
   };
+
+  // ── Observability callbacks ───────────────────────────────────────────────
+  onReconnectAttempt?: (attempt: number, delayMs: number) => void;
+  // Called each time a reconnect is scheduled.
+  // attempt: 1-based index. delayMs: milliseconds until the next connect().
+  onReconnectSuccess?: () => void;
+  // Called when a reconnect attempt results in a successful open.
+  onStale?: () => void;
+  // Called when a stale/zombie connection is detected (before reconnecting).
+  onFatalError?: (error: SseError) => void;
+  // Called when the stream enters the terminal FAILED state
+  // (max retries exceeded or a non-retryable HTTP error).
 
   debug?: boolean; // log reconnect / stale / network events to console
 }
@@ -604,49 +649,125 @@ Schedule (no jitter): 1 s → 2 s → 4 s → 8 s → 16 s → 30 s → 30 s →
 
 ---
 
-### React hook with stateChange
+### React hook
+
+The library ships a `useNativeSSE` hook that manages the full connection lifecycle automatically.
 
 ```tsx
-import { useEffect, useState, useRef } from 'react';
-import { NativeSSE } from 'jose-native-sse';
-import type { SseConnectOptions, SseState } from 'jose-native-sse';
+import { useNativeSSE } from 'jose-native-sse';
 
-export function useSSE(url: string, options?: SseConnectOptions) {
-  const [state, setState]   = useState<SseState>('idle');
-  const [lastData, setData] = useState<string | null>(null);
-  const [error, setError]   = useState<string | null>(null);
-  const sseRef              = useRef<NativeSSE | null>(null);
-
-  useEffect(() => {
-    const sse = new NativeSSE(url, { autoConnect: false, ...options });
-    sseRef.current = sse;
-
-    sse.onstatechange = ({ to }) => setState(to);
-    sse.onmessage     = (e)      => setData(e.data);
-    sse.onerror       = (e)      => { if (!e.retryable) setError(e.message); };
-
-    sse.connect();
-    return () => sse.close();
-  }, [url]); // eslint-disable-line react-hooks/exhaustive-deps
-
-  return { state, lastData, error, sse: sseRef.current };
-}
-
-// Usage
 function Feed() {
-  const { state, lastData } = useSSE('https://api.example.com/events', {
-    reconnectPolicy:  { type: 'exponential', initialMs: 1000, maxMs: 30000 },
-    staleTimeoutMs:   30_000,
-    networkAwareness: true,
-  });
+  const { state, lastMessage, lastError, pause, resume } = useNativeSSE(
+    'https://api.example.com/events',
+    {
+      headers:          { Authorization: `Bearer ${token}` },
+      reconnectPolicy:  { type: 'exponential', initialMs: 1_000, maxMs: 30_000 },
+      staleTimeoutMs:   30_000,
+      networkAwareness: true,
+    },
+  );
 
   return (
     <View>
       <Text>State: {state}</Text>
-      <Text>Last event: {lastData}</Text>
+      <Text>Last event: {lastMessage?.data}</Text>
+      {lastError && <Text>Error: {lastError.message}</Text>}
+      <Button title="Pause"  onPress={pause} />
+      <Button title="Resume" onPress={resume} />
     </View>
   );
 }
+```
+
+The hook re-opens the connection when `url` changes and cleans up on unmount. Pass `enabled: false` to defer connecting:
+
+```tsx
+const { state } = useNativeSSE(url, { enabled: isLoggedIn });
+```
+
+---
+
+### OpenAI streaming
+
+```tsx
+import { useNativeSSE } from 'jose-native-sse';
+
+function ChatStream({ messages }: { messages: OpenAIMessage[] }) {
+  const [output, setOutput] = useState('');
+
+  const { state } = useNativeSSE('https://api.openai.com/v1/chat/completions', {
+    method:  'POST',
+    headers: {
+      Authorization:  'Bearer sk-...',
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ model: 'gpt-4o', stream: true, messages }),
+    // Batch tokens to reduce React re-renders to one per animation frame
+    batch: { enabled: true, flushIntervalMs: 16, maxBatchSize: 50 },
+    onbatch: (events) => {
+      const chunk = events
+        .map(e => {
+          try { return JSON.parse(e.data)?.choices?.[0]?.delta?.content ?? ''; }
+          catch { return ''; }
+        })
+        .join('');
+      setOutput(prev => prev + chunk);
+    },
+  } as any);
+
+  return <Text>{output}</Text>;
+}
+```
+
+Or with the low-level API and `onbatch`:
+
+```ts
+const sse = new NativeSSE('https://api.openai.com/v1/chat/completions', {
+  method:  'POST',
+  headers: { Authorization: 'Bearer sk-...', 'Content-Type': 'application/json' },
+  body:    JSON.stringify({ model: 'gpt-4o', stream: true, messages }),
+  batch:   { enabled: true, flushIntervalMs: 16 },
+});
+
+sse.onbatch = (events) => {
+  for (const e of events) {
+    if (e.data === '[DONE]') { sse.close(); return; }
+    try {
+      const delta = JSON.parse(e.data).choices?.[0]?.delta?.content;
+      if (delta) appendToken(delta);
+    } catch { /* ignore non-JSON */ }
+  }
+};
+```
+
+---
+
+### Anthropic streaming
+
+```ts
+const sse = new NativeSSE('https://api.anthropic.com/v1/messages', {
+  method:  'POST',
+  headers: {
+    'x-api-key':         'sk-ant-...',
+    'anthropic-version': '2023-06-01',
+    'Content-Type':      'application/json',
+  },
+  body: JSON.stringify({
+    model:      'claude-opus-4-7',
+    max_tokens: 1024,
+    stream:     true,
+    messages:   [{ role: 'user', content: 'Hello' }],
+  }),
+});
+
+sse.addEventListener('content_block_delta', (e) => {
+  try {
+    const delta = JSON.parse(e.data)?.delta?.text;
+    if (delta) appendToken(delta);
+  } catch { /* ignore */ }
+});
+
+sse.addEventListener('message_stop', () => sse.close());
 ```
 
 ---
@@ -793,6 +914,7 @@ All public types are exported from the package root:
 
 ```ts
 import type {
+  // Options
   SseConnectOptions,
   ReconnectPolicy,
   FixedReconnectPolicy,
@@ -801,21 +923,30 @@ import type {
   NetworkObserver,
   StorageAdapter,
 
+  // States
   SseState,
   SseReadyState,
 
+  // Events
   SseOpenEvent,
   SseMessageEvent,
   SseErrorEvent,
   SseStateChangeEvent,
 
+  // Errors
   SseError,
   SseErrorCode,
 
+  // Metrics
   StreamMetrics,
 
+  // Parser
   ParsedEvent,
   SseParserOptions,
+
+  // Hook
+  UseNativeSSEOptions,
+  UseNativeSSEResult,
 } from 'jose-native-sse';
 ```
 

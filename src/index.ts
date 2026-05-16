@@ -1,5 +1,9 @@
 // ─── Core classes ─────────────────────────────────────────────────────────────
 export { NativeSSE } from './EventSource';
+
+// ─── React hook ───────────────────────────────────────────────────────────────
+export { useNativeSSE } from './useNativeSSE';
+export type { UseNativeSSEOptions, UseNativeSSEResult } from './useNativeSSE';
 export { SseStreamManager } from './StreamManager';
 export { SseParser } from './SseParser';
 export { StateMachine } from './StateMachine';

@@ -270,6 +270,33 @@ describe('SseParser – byteLength', () => {
   });
 });
 
+// ─── BOM handling ────────────────────────────────────────────────────────────
+
+describe('SseParser – BOM handling', () => {
+  it('strips UTF-8 BOM at the very start of the stream', () => {
+    const { parser, events } = makeParser();
+    parser.feed('﻿data: hello\n\n');
+    expect(events[0]!.event.data).toBe('hello');
+  });
+
+  it('does not strip BOM after the first chunk', () => {
+    const { parser, events } = makeParser();
+    parser.feed('data: ok\n\n');
+    // BOM in subsequent chunk is not stripped — becomes an unknown field prefix
+    parser.feed('﻿data: second\n\n');
+    expect(events).toHaveLength(1); // only the first event dispatched
+  });
+
+  it('resets BOM flag on reset() so next stream is handled correctly', () => {
+    const { parser, events } = makeParser();
+    parser.feed('﻿data: first\n\n');
+    parser.reset();
+    parser.feed('﻿data: second\n\n');
+    expect(events).toHaveLength(2);
+    expect(events[1]!.event.data).toBe('second');
+  });
+});
+
 // ─── reset() ─────────────────────────────────────────────────────────────────
 
 describe('SseParser – reset()', () => {

@@ -208,6 +208,18 @@ sse.close();
 const sse = new NativeSSE(url: string, options?: SseConnectOptions)
 ```
 
+The constructor validates `url` synchronously. A `TypeError` is thrown immediately (before any network activity) if:
+- The URL is not a valid absolute URL (e.g. a relative path like `'/stream'`)
+- The protocol is not `http:` or `https:` (e.g. `ws://`, `ftp://`)
+
+```ts
+new NativeSSE('/stream');              // ✗ TypeError: Invalid URL
+new NativeSSE('ws://example.com');    // ✗ TypeError: Invalid URL
+new NativeSSE('https://example.com'); // ✓
+```
+
+Passing `transport: 'native'` when the native TurboModule is absent (e.g. Expo Go) throws an `Error` immediately. Use `transport: 'auto'` to fall back gracefully.
+
 #### Properties
 
 | Property | Type | Description |
@@ -259,20 +271,25 @@ const result = useNativeSSE(url: string, options?: UseNativeSSEOptions)
 |---|---|---|---|
 | `enabled` | `boolean` | `true` | Set to `false` to skip connecting (useful for auth-gated streams). |
 
-`UseNativeSSEResult`:
+`UseNativeSSEResult` — reactive fields:
 
 | Field | Type | Description |
 |---|---|---|
 | `state` | `SseState` | Current fine-grained connection state. |
 | `readyState` | `0 \| 1 \| 2` | Browser-compatible ready state. |
-| `lastMessage` | `SseMessageEvent \| null` | Most recently received message. |
-| `lastBatch` | `SseMessageEvent[] \| null` | Most recently flushed batch. Only populated when `batch.enabled: true`. |
-| `lastError` | `SseErrorEvent \| null` | Most recent error. |
-| `metrics` | `StreamMetrics` | Snapshot updated on each message and state change. |
-| `pause()` | `() => void` | Pause the stream. |
-| `resume()` | `() => void` | Resume a paused stream. |
-| `reconnect()` | `() => void` | Force an immediate reconnect without backoff. No-op if `closed` or `failed`. |
-| `close()` | `() => void` | Permanently close the stream. |
+| `lastMessage` | `SseMessageEvent \| null` | Most recently received message. `null` until the first message arrives. |
+| `lastBatch` | `SseMessageEvent[] \| null` | Most recently flushed batch. Only set when `batch.enabled: true`; `null` otherwise. |
+| `lastError` | `SseErrorEvent \| null` | Most recent error. `null` if no error has occurred. |
+| `metrics` | `StreamMetrics` | Snapshot updated on each message and state transition. |
+
+`UseNativeSSEResult` — imperative controls:
+
+| Method | Description |
+|---|---|
+| `pause()` | Pause the stream without closing it. |
+| `resume()` | Resume after `pause()`. No-op if not paused. |
+| `reconnect()` | Force an immediate reconnect without backoff. No-op if `closed` or `failed`. |
+| `close()` | Permanently close the stream. |
 
 The connection is opened on mount, closed on unmount, and reconnected when `url` or `enabled` changes.
 
@@ -824,6 +841,35 @@ sse.addEventListener('content_block_delta', (e) => {
 });
 
 sse.addEventListener('message_stop', () => sse.close());
+```
+
+---
+
+### AI token streaming with the hook (`lastBatch`)
+
+When `batch.enabled: true`, the hook populates `lastBatch` on every flush instead of `lastMessage` on every token — reducing React re-renders from one-per-token to one-per-frame:
+
+```tsx
+function ChatStream() {
+  const [output, setOutput] = useState('');
+
+  const { state, lastBatch } = useNativeSSE(
+    'https://api.example.com/chat/completions',
+    {
+      method:  'POST',
+      headers: { Authorization: 'Bearer sk-...' },
+      body:    JSON.stringify({ model: 'gpt-4o', stream: true, messages }),
+      batch:   { enabled: true, flushIntervalMs: 16, maxBatchSize: 50 },
+    },
+  );
+
+  useEffect(() => {
+    if (!lastBatch) return;
+    setOutput(prev => prev + lastBatch.map(e => e.data).join(''));
+  }, [lastBatch]);
+
+  return <Text>{output}</Text>;
+}
 ```
 
 ---

@@ -266,6 +266,7 @@ const result = useNativeSSE(url: string, options?: UseNativeSSEOptions)
 | `state` | `SseState` | Current fine-grained connection state. |
 | `readyState` | `0 \| 1 \| 2` | Browser-compatible ready state. |
 | `lastMessage` | `SseMessageEvent \| null` | Most recently received message. |
+| `lastBatch` | `SseMessageEvent[] \| null` | Most recently flushed batch. Only populated when `batch.enabled: true`. |
 | `lastError` | `SseErrorEvent \| null` | Most recent error. |
 | `metrics` | `StreamMetrics` | Snapshot updated on each message and state change. |
 | `pause()` | `() => void` | Pause the stream. |

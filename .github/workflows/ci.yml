@@ -23,7 +23,7 @@ jobs:
         run: npm ci
 
       - name: Lint
-        run: npm run lint
+        run: npx eslint "src/**/*.ts" "__tests__/**/*.ts" "__mocks__/**/*.ts"
 
       - name: Typecheck
         run: npm run typecheck

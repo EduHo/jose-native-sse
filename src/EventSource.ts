@@ -32,10 +32,11 @@ import type {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const isTurboModuleEnabled = !!(global as any).__turboModuleProxy;
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+/* eslint-disable @typescript-eslint/no-var-requires */
 const NativeNativeSse = isTurboModuleEnabled
   ? require('./NativeNativeSse').default
   : NativeModules.NativeNativeSse;
+/* eslint-enable @typescript-eslint/no-var-requires */
 
 const emitter =
   NativeNativeSse != null ? new NativeEventEmitter(NativeNativeSse) : null;
@@ -342,15 +343,14 @@ export class NativeSSE {
   }
 
   addEventListener(type: string, listener: AnyHandler): void {
-    if (!this._handlers[type]) this._handlers[type] = [];
-    if (!this._handlers[type]!.includes(listener)) {
-      this._handlers[type]!.push(listener);
-    }
+    const handlers = this._handlers[type] ?? (this._handlers[type] = []);
+    if (!handlers.includes(listener)) handlers.push(listener);
   }
 
   removeEventListener(type: string, listener: AnyHandler): void {
-    if (!this._handlers[type]) return;
-    this._handlers[type] = this._handlers[type]!.filter((l) => l !== listener);
+    const handlers = this._handlers[type];
+    if (!handlers) return;
+    this._handlers[type] = handlers.filter((l) => l !== listener);
   }
 
   // ── Internal event handlers (shared by native + fallback transports) ─────────
@@ -635,6 +635,7 @@ export class NativeSSE {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         try {
+          // eslint-disable-next-line no-constant-condition
           while (true) {
             const { done, value } = await reader.read();
             if (sid !== this._streamId || controller.signal.aborted) break;

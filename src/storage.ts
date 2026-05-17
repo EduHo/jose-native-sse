@@ -49,6 +49,7 @@ export class AsyncStorageAdapter implements StorageAdapter {
   private _get(): any {
     if (!this._mod) {
       try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
         const mod = require('@react-native-async-storage/async-storage');
         this._mod = mod.default ?? mod;
       } catch {

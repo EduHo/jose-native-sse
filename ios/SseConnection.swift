@@ -6,10 +6,11 @@
 //  • Thin transport: raw UTF-8 chunks are forwarded to JS for SSE parsing.
 //    All SSE protocol parsing (line splitting, field extraction, event dispatch)
 //    lives in the JS SseParser, keeping native code minimal.
-//  • Thread-safe cancel flag via NSLock.
+//  • Thread-safe cancel flag via os_unfair_lock (lower overhead than NSLock).
 //  • Exposed to ObjC++ via @objcMembers so NativeSse.mm can use it directly.
 
 import Foundation
+import os.lock
 
 // MARK: - SseConnectionSwift
 
@@ -40,7 +41,7 @@ public final class SseConnectionSwift: NSObject {
 
     private var session: URLSession?
     private var task: URLSessionDataTask?
-    private let lock = NSLock()
+    private var _lock = os_unfair_lock()
     private var _cancelled = false
 
     // MARK: Init
@@ -65,7 +66,7 @@ public final class SseConnectionSwift: NSObject {
     // MARK: Public API
 
     public func connect() {
-        lock.lock(); _cancelled = false; lock.unlock()
+        os_unfair_lock_lock(&_lock); _cancelled = false; os_unfair_lock_unlock(&_lock)
 
         var request = URLRequest(url: url)
         request.httpMethod = method
@@ -88,7 +89,7 @@ public final class SseConnectionSwift: NSObject {
     }
 
     public func disconnect() {
-        lock.lock(); _cancelled = true; lock.unlock()
+        os_unfair_lock_lock(&_lock); _cancelled = true; os_unfair_lock_unlock(&_lock)
         task?.cancel()
         session?.invalidateAndCancel()
         task    = nil
@@ -98,7 +99,9 @@ public final class SseConnectionSwift: NSObject {
     // MARK: Private helpers
 
     private var isCancelled: Bool {
-        lock.lock(); defer { lock.unlock() }; return _cancelled
+        os_unfair_lock_lock(&_lock)
+        defer { os_unfair_lock_unlock(&_lock) }
+        return _cancelled
     }
 }
 

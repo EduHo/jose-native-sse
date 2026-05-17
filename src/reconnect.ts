@@ -36,6 +36,14 @@ export function resolvePolicy(options: {
   reconnectPolicy?: ReconnectPolicy;
   reconnectInterval?: number;
 }): ReconnectPolicy {
-  if (options.reconnectPolicy) return options.reconnectPolicy;
+  if (options.reconnectPolicy) {
+    if (options.reconnectInterval !== undefined) {
+      console.warn(
+        '[NativeSSE] Both reconnectPolicy and reconnectInterval were provided. ' +
+        'reconnectPolicy takes precedence; reconnectInterval is ignored.',
+      );
+    }
+    return options.reconnectPolicy;
+  }
   return { type: 'fixed', intervalMs: options.reconnectInterval ?? 3000 };
 }

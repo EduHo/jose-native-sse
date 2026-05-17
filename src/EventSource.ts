@@ -32,10 +32,11 @@ import type {
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 const isTurboModuleEnabled = !!(global as any).__turboModuleProxy;
-// eslint-disable-next-line @typescript-eslint/no-var-requires
+/* eslint-disable @typescript-eslint/no-var-requires */
 const NativeNativeSse = isTurboModuleEnabled
   ? require('./NativeNativeSse').default
   : NativeModules.NativeNativeSse;
+/* eslint-enable @typescript-eslint/no-var-requires */
 
 const emitter =
   NativeNativeSse != null ? new NativeEventEmitter(NativeNativeSse) : null;
@@ -140,6 +141,9 @@ export class NativeSSE {
   private _staleTimer: ReturnType<typeof setTimeout> | null = null;
   private _networkBlocked = false;
   private _subscriptions: EmitterSubscription[] = [];
+  // Reconnect interval sent by the server via `retry:` field.
+  // Overrides the configured policy for all subsequent reconnects.
+  private _serverRetryMs: number | null = null;
 
   // ── Fallback transport state ─────────────────────────────────────────────────
   private _xhr: XMLHttpRequest | null = null;
@@ -176,8 +180,26 @@ export class NativeSSE {
   // ── Constructor ─────────────────────────────────────────────────────────────
 
   constructor(url: string, options: SseConnectOptions = {}) {
+    // Validate URL early — mirrors browser EventSource SyntaxError behaviour.
+    try {
+      const parsed = new URL(url);
+      if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+        throw new TypeError(`Unsupported protocol "${parsed.protocol}"`);
+      }
+    } catch {
+      throw new TypeError(
+        `[NativeSSE] Invalid URL: "${url}". Must be an absolute URL with http:// or https://.`,
+      );
+    }
+
     const t = options.transport ?? 'auto';
     if (t === 'native') {
+      if (!NativeNativeSse) {
+        throw new Error(
+          '[NativeSSE] transport: "native" was specified but the native module is not available. ' +
+          'Use transport: "auto", "fetch", or "xhr" for Expo Go and unlinked builds.',
+        );
+      }
       this._useFallback  = false;
       this._fallbackType = 'xhr'; // unused
     } else if (t === 'xhr') {
@@ -288,16 +310,47 @@ export class NativeSSE {
     this._doConnect();
   }
 
-  addEventListener(type: string, listener: AnyHandler): void {
-    if (!this._handlers[type]) this._handlers[type] = [];
-    if (!this._handlers[type]!.includes(listener)) {
-      this._handlers[type]!.push(listener);
+  /**
+   * Force an immediate reconnect from any non-terminal state, bypassing the
+   * reconnect policy entirely (no backoff delay).
+   *
+   * Unlike automatic reconnects, this does NOT increment the reconnect attempt
+   * counter and does NOT reset `maxReconnectAttempts` tracking — it is treated
+   * as a fresh user-initiated connection.
+   *
+   * Common use cases:
+   *  - Auth token refreshed: update headers externally then call `reconnect()`
+   *    to pick them up on the next request.
+   *  - "Retry" button in UI after a fatal error.
+   *
+   * No-op when state is `closed` or `failed`.
+   */
+  reconnect(): void {
+    const s = this._sm.state;
+    if (s === SSE_STATE.CLOSED || s === SSE_STATE.FAILED) return;
+
+    // Tear down the current connection without permanently closing the stream.
+    this._cleanup();
+    if (s !== SSE_STATE.IDLE && !this._useFallback) {
+      NativeNativeSse?.disconnect(this._streamId);
     }
+
+    // User-initiated — reset the backoff counter so the next auto-reconnect
+    // after a future error starts from attempt 1 again.
+    this._reconnectAttempts = 0;
+
+    this._doConnect();
+  }
+
+  addEventListener(type: string, listener: AnyHandler): void {
+    const handlers = this._handlers[type] ?? (this._handlers[type] = []);
+    if (!handlers.includes(listener)) handlers.push(listener);
   }
 
   removeEventListener(type: string, listener: AnyHandler): void {
-    if (!this._handlers[type]) return;
-    this._handlers[type] = this._handlers[type]!.filter((l) => l !== listener);
+    const handlers = this._handlers[type];
+    if (!handlers) return;
+    this._handlers[type] = handlers.filter((l) => l !== listener);
   }
 
   // ── Internal event handlers (shared by native + fallback transports) ─────────
@@ -306,9 +359,11 @@ export class NativeSSE {
     if (raw.streamId !== this._streamId) return;
 
     this._transition(SSE_STATE.OPEN);
+    const wasReconnect = this._reconnectAttempts > 0;
     this._reconnectAttempts = 0;
     this._metrics.connectedAt = Date.now();
     this._resetStaleTimer();
+    if (wasReconnect) this._opts.onReconnectSuccess?.();
 
     const evt: SseOpenEvent = { type: 'open', origin: this._url };
     this.onopen?.(evt);
@@ -367,6 +422,7 @@ export class NativeSSE {
     if (raw.isFatal || s === SSE_STATE.CLOSED) {
       this._transition(SSE_STATE.FAILED);
       this._cleanup(true);
+      this._opts.onFatalError?.(err);
     } else if (s !== SSE_STATE.PAUSED) {
       this._scheduleReconnect();
     }
@@ -420,10 +476,7 @@ export class NativeSSE {
           id:        parsed.id ?? '',
         });
       },
-      onRetry: (ms) => {
-        (this._policy as FixedPatch).intervalMs = ms;
-        (this._policy as FixedPatch).type = 'fixed';
-      },
+      onRetry: (ms) => { this._serverRetryMs = ms; },
       onParseError: (reason) => {
         this._onError({
           streamId:  sid,
@@ -516,10 +569,7 @@ export class NativeSSE {
           id:        parsed.id ?? '',
         });
       },
-      onRetry: (ms) => {
-        (this._policy as FixedPatch).intervalMs = ms;
-        (this._policy as FixedPatch).type = 'fixed';
-      },
+      onRetry: (ms) => { this._serverRetryMs = ms; },
       onParseError: (reason) => {
         this._onError({
           streamId:  sid,
@@ -585,6 +635,7 @@ export class NativeSSE {
         const reader = response.body.getReader();
         const decoder = new TextDecoder();
         try {
+          // eslint-disable-next-line no-constant-condition
           while (true) {
             const { done, value } = await reader.read();
             if (sid !== this._streamId || controller.signal.aborted) break;
@@ -607,6 +658,9 @@ export class NativeSSE {
           });
         } finally {
           reader.releaseLock();
+          // Null the controller ref if this stream is still the active one,
+          // so it can be garbage-collected after natural completion.
+          if (this._fetchController === controller) this._fetchController = null;
         }
       })
       .catch((err: Error) => {
@@ -685,10 +739,7 @@ export class NativeSSE {
           id:        parsed.id ?? '',
         });
       },
-      onRetry: (ms) => {
-        (this._policy as FixedPatch).intervalMs = ms;
-        (this._policy as FixedPatch).type = 'fixed';
-      },
+      onRetry: (ms) => { this._serverRetryMs = ms; },
       onParseError: (reason) => {
         this._onError({
           streamId:  sid,
@@ -722,6 +773,7 @@ export class NativeSSE {
       this._cleanup(true);
       const err = this._makeError('MAX_RETRIES_EXCEEDED', `Max reconnect attempts (${this._maxAttempts}) reached`, undefined, false);
       this._metrics.lastError = err;
+      this._opts.onFatalError?.(err);
       this.onerror?.(err);
       this._dispatch('error', err);
       return;
@@ -736,7 +788,10 @@ export class NativeSSE {
       return;
     }
 
-    const delay = computeDelay(this._policy, this._reconnectAttempts);
+    const delay = this._serverRetryMs !== null
+      ? this._serverRetryMs
+      : computeDelay(this._policy, this._reconnectAttempts);
+    this._opts.onReconnectAttempt?.(this._reconnectAttempts, delay);
 
     if (this._opts.debug) {
       console.log(
@@ -830,6 +885,7 @@ export class NativeSSE {
 
       this._transition(SSE_STATE.STALE);
       this._metrics.staleCount += 1;
+      this._opts.onStale?.();
 
       const err = this._makeError('TIMEOUT_ERROR', `No data received for ${this._staleTimeoutMs}ms (stale connection)`, undefined, true);
       this._metrics.lastError = err;
@@ -903,5 +959,3 @@ export class NativeSSE {
   }
 }
 
-// Internal type alias used for server retry override.
-interface FixedPatch { type: string; intervalMs: number }

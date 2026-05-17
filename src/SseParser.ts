@@ -47,6 +47,8 @@ export class SseParser {
   // Line accumulation buffer (never grows beyond maxLineLength + separator).
   private lineBuffer = '';
   private lineOverflow = false;
+  // Strip the UTF-8 BOM (U+FEFF) only from the very first bytes of the stream.
+  private _bomHandled = false;
 
   // SSE event field accumulators.
   private eventType = '';
@@ -71,6 +73,10 @@ export class SseParser {
    * including partial lines — buffering is handled internally.
    */
   feed(chunk: string): void {
+    if (!this._bomHandled) {
+      this._bomHandled = true;
+      if (chunk.charCodeAt(0) === 0xFEFF) chunk = chunk.slice(1);
+    }
     this._bytesProcessed += chunk.length;
     this.lineBuffer += chunk;
 
@@ -149,12 +155,13 @@ export class SseParser {
    * Per spec, lastEventId is intentionally preserved across resets (§9.2.6 step 15).
    */
   reset(): void {
-    this.lineBuffer  = '';
+    this.lineBuffer   = '';
     this.lineOverflow = false;
-    this.eventType   = '';
-    this.dataLines   = [];
-    this._lastRetry  = null;
-    // lastEventId: NOT reset.
+    this.eventType    = '';
+    this.dataLines    = [];
+    this._lastRetry   = null;
+    this._bomHandled  = false;
+    // lastEventId: NOT reset (spec §9.2.6 step 15).
   }
 
   /** Returns the last received event ID (persists through reset()). */

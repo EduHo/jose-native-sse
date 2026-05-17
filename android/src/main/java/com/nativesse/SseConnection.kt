@@ -8,6 +8,7 @@ import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
 import java.io.IOException
+import java.net.SocketTimeoutException
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -64,7 +65,7 @@ internal class SseConnection(
         call!!.enqueue(object : Callback {
             override fun onFailure(call: Call, e: IOException) {
                 if (cancelled.get()) return
-                val isTimeout = e.message?.contains("timeout", ignoreCase = true) == true
+                val isTimeout = e is SocketTimeoutException
                 onError(e.message ?: "Connection failed", null,
                     if (isTimeout) "TIMEOUT_ERROR" else "NETWORK_ERROR", false)
             }
@@ -104,7 +105,7 @@ internal class SseConnection(
                         if (!cancelled.get()) onClose()
                     } catch (e: IOException) {
                         if (!cancelled.get()) {
-                            val isTimeout = e.message?.contains("timeout", ignoreCase = true) == true
+                            val isTimeout = e is SocketTimeoutException
                             onError(e.message ?: "Stream read error", null,
                                 if (isTimeout) "TIMEOUT_ERROR" else "NETWORK_ERROR", false)
                         }

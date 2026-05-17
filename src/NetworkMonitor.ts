@@ -28,6 +28,7 @@ export class NetworkMonitor {
 
     if (autoNetInfo) {
       try {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
         const mod = require('@react-native-community/netinfo');
         const NetInfo = mod.default ?? mod;
         this._unsub = NetInfo.addEventListener(

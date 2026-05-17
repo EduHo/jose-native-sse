@@ -225,4 +225,60 @@ describe('NativeSSE – network awareness', () => {
     expect(mockConnect).toHaveBeenCalledTimes(1);
     sse.close();
   });
+
+  it('handles rapid offline → online → offline churn without spurious connects', () => {
+    const { observer } = makeNetworkObserver();
+    const sse = new NativeSSE(URL, {
+      networkObserver: observer,
+      reconnectPolicy: { type: 'fixed', intervalMs: 30_000 },
+    });
+    emitOpen();
+
+    // Connection drops — enters RECONNECTING (30 s timer)
+    __emit('sse_error', {
+      streamId: lastStreamId(), message: 'drop', isFatal: false, errorCode: 'NETWORK_ERROR',
+    });
+    expect(sse.state).toBe(SSE_STATE.RECONNECTING);
+
+    // Offline — cancels the timer and blocks reconnect
+    observer.simulateChange(false);
+    const connectsBefore = mockConnect.mock.calls.length; // still 1
+
+    // Online — triggers immediate reconnect; state moves to CONNECTING
+    observer.simulateChange(true);
+    expect(sse.state).toBe(SSE_STATE.CONNECTING);
+    expect(mockConnect.mock.calls.length).toBe(connectsBefore + 1);
+
+    // Further online events while already CONNECTING must NOT trigger extra connects
+    observer.simulateChange(false);
+    observer.simulateChange(true);
+    expect(mockConnect.mock.calls.length).toBe(connectsBefore + 1);
+
+    sse.close();
+  });
+
+  it('suspended reconnect timer does not fire after network comes back and reconnect starts', () => {
+    const { observer } = makeNetworkObserver();
+    const sse = new NativeSSE(URL, {
+      networkObserver: observer,
+      reconnectPolicy: { type: 'fixed', intervalMs: 5_000 },
+    });
+    emitOpen();
+
+    __emit('sse_error', {
+      streamId: lastStreamId(), message: 'drop', isFatal: false, errorCode: 'NETWORK_ERROR',
+    });
+
+    // Go offline — timer should be cancelled
+    observer.simulateChange(false);
+
+    // Come back online — immediate connect, no timer running
+    observer.simulateChange(true);
+    const connectCount = mockConnect.mock.calls.length;
+
+    // Even if we advance past the original timer delay, no extra connect fires
+    jest.advanceTimersByTime(10_000);
+    expect(mockConnect.mock.calls.length).toBe(connectCount);
+    sse.close();
+  });
 });

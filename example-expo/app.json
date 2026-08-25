@@ -8,6 +8,9 @@
     },
     "ios": {
       "bundleIdentifier": "com.eduardo.ceiia.exampleexpo"
-    }
+    },
+    "plugins": [
+      "jose-native-sse"
+    ]
   }
 }

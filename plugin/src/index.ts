@@ -1,64 +1,167 @@
 import {
   AndroidConfig,
-  ConfigPlugin,
   createRunOncePlugin,
   withAndroidManifest,
+  withDangerousMod,
   withInfoPlist,
 } from '@expo/config-plugins';
+import type { ConfigPlugin } from '@expo/config-plugins';
+import * as fs from 'fs';
+import * as path from 'path';
 
 // ─── Plugin options ───────────────────────────────────────────────────────────
 
 type NativeSsePluginOptions = {
   /**
-   * Allow cleartext HTTP traffic (i.e. `http://` endpoints).
+   * Hostnames allowed to serve plain `http://`, e.g.
+   * `["sse.internal.example.com"]`.
    *
-   * On iOS adds `NSAppTransportSecurity.NSAllowsArbitraryLoads = true` to
-   * Info.plist. On Android sets `android:usesCleartextTraffic="true"` on
-   * the `<application>` element.
+   * Scoped per domain: iOS gets an `NSExceptionDomains` entry and Android a
+   * `network_security_config.xml` `domain-config`. Everything else keeps its
+   * HTTPS requirement.
    *
-   * **Only enable this if your SSE server uses plain HTTP.**
-   * Default: false.
+   * **Prefer this over `allowCleartext`.**
+   */
+  cleartextDomains?: string[];
+  /**
+   * Allow cleartext HTTP to **every** host in the app.
+   *
+   * On iOS this sets `NSAllowsArbitraryLoads`, which disables App Transport
+   * Security app-wide and needs a written justification during App Store
+   * review; on Android it sets `android:usesCleartextTraffic="true"` on the
+   * whole application.
+   *
+   * Use `cleartextDomains` unless you genuinely need this. Default: false.
    */
   allowCleartext?: boolean;
 };
 
-// ─── iOS modifier ─────────────────────────────────────────────────────────────
+const NETWORK_SECURITY_CONFIG_RESOURCE = 'network_security_config';
+
+/** Info.plist values are plain JSON; `unknown` will not satisfy the plist type. */
+type PlistValue =
+  | string
+  | number
+  | boolean
+  | null
+  | PlistValue[]
+  | { [key: string]: PlistValue };
+type PlistDict = { [key: string]: PlistValue };
+
+// ─── iOS ──────────────────────────────────────────────────────────────────────
 
 const withIosNativeSse: ConfigPlugin<NativeSsePluginOptions> = (
   config,
-  { allowCleartext = false } = {},
+  { allowCleartext = false, cleartextDomains = [] } = {},
 ) =>
   withInfoPlist(config, (c) => {
+    if (!allowCleartext && cleartextDomains.length === 0) return c;
+
+    const ats: PlistDict = {
+      ...((c.modResults.NSAppTransportSecurity as PlistDict | undefined) ?? {}),
+    };
+
     if (allowCleartext) {
-      c.modResults.NSAppTransportSecurity = {
-        ...(c.modResults.NSAppTransportSecurity as object | undefined),
-        NSAllowsArbitraryLoads: true,
-      };
+      ats.NSAllowsArbitraryLoads = true;
     }
+
+    if (cleartextDomains.length > 0) {
+      const domains: PlistDict = {
+        ...((ats.NSExceptionDomains as PlistDict | undefined) ?? {}),
+      };
+      for (const domain of cleartextDomains) {
+        domains[domain] = {
+          NSExceptionAllowsInsecureHTTPLoads: true,
+          // Subdomains are not included: an exception should be as narrow as
+          // the endpoint that needs it.
+          NSIncludesSubdomains: false,
+        };
+      }
+      ats.NSExceptionDomains = domains;
+    }
+
+    c.modResults.NSAppTransportSecurity = ats;
     return c;
   });
 
-// ─── Android modifier ─────────────────────────────────────────────────────────
+// ─── Android ──────────────────────────────────────────────────────────────────
 
 const withAndroidNativeSse: ConfigPlugin<NativeSsePluginOptions> = (
   config,
-  { allowCleartext = false } = {},
+  { allowCleartext = false, cleartextDomains = [] } = {},
 ) =>
   withAndroidManifest(config, (c) => {
-    // Ensure INTERNET permission is present (required for any network access).
+    // Any network access needs INTERNET.
     AndroidConfig.Permissions.ensurePermissions(c.modResults, [
       'android.permission.INTERNET',
     ]);
 
+    const app = AndroidConfig.Manifest.getMainApplication(c.modResults);
+    if (!app?.$) return c;
+
     if (allowCleartext) {
-      const app = AndroidConfig.Manifest.getMainApplication(c.modResults);
-      if (app?.$) {
-        app.$['android:usesCleartextTraffic'] = 'true';
-      }
+      app.$['android:usesCleartextTraffic'] = 'true';
+    }
+
+    if (cleartextDomains.length > 0) {
+      // A per-domain config is authoritative on API 24+, so the blanket
+      // usesCleartextTraffic flag stays off.
+      app.$['android:networkSecurityConfig'] =
+        `@xml/${NETWORK_SECURITY_CONFIG_RESOURCE}`;
     }
 
     return c;
   });
+
+/**
+ * Writes `res/xml/network_security_config.xml` with one `domain-config` per
+ * allowed host. Android has no config-plugin helper for this file, so it is
+ * written directly.
+ */
+const withAndroidNetworkSecurityConfig: ConfigPlugin<NativeSsePluginOptions> = (
+  config,
+  { cleartextDomains = [] } = {},
+) => {
+  if (cleartextDomains.length === 0) return config;
+
+  return withDangerousMod(config, [
+    'android',
+    async (c) => {
+      const xmlDir = path.join(
+        c.modRequest.platformProjectRoot,
+        'app',
+        'src',
+        'main',
+        'res',
+        'xml',
+      );
+      await fs.promises.mkdir(xmlDir, { recursive: true });
+
+      const entries = cleartextDomains
+        .map(
+          (domain) =>
+            `  <domain-config cleartextTrafficPermitted="true">\n` +
+            `    <domain includeSubdomains="false">${domain}</domain>\n` +
+            `  </domain-config>`,
+        )
+        .join('\n');
+
+      const xml =
+        `<?xml version="1.0" encoding="utf-8"?>\n` +
+        `<!-- Generated by jose-native-sse. Edits will be overwritten by prebuild. -->\n` +
+        `<network-security-config>\n` +
+        `${entries}\n` +
+        `</network-security-config>\n`;
+
+      await fs.promises.writeFile(
+        path.join(xmlDir, `${NETWORK_SECURITY_CONFIG_RESOURCE}.xml`),
+        xml,
+        'utf8',
+      );
+      return c;
+    },
+  ]);
+};
 
 // ─── Combined plugin ──────────────────────────────────────────────────────────
 
@@ -67,8 +170,18 @@ const withNativeSse: ConfigPlugin<NativeSsePluginOptions | void> = (
   options,
 ) => {
   const opts: NativeSsePluginOptions = options ?? {};
+
+  if (opts.allowCleartext && (opts.cleartextDomains?.length ?? 0) > 0) {
+    console.warn(
+      '[jose-native-sse] Both allowCleartext and cleartextDomains were set. ' +
+        'allowCleartext already permits every host, so the per-domain list adds ' +
+        'nothing — drop allowCleartext to keep the exception narrow.',
+    );
+  }
+
   config = withIosNativeSse(config, opts);
   config = withAndroidNativeSse(config, opts);
+  config = withAndroidNetworkSecurityConfig(config, opts);
   return config;
 };
 

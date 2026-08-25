@@ -1,14 +1,25 @@
-import { ConfigPlugin } from '@expo/config-plugins';
+import type { ConfigPlugin } from '@expo/config-plugins';
 type NativeSsePluginOptions = {
     /**
-     * Allow cleartext HTTP traffic (i.e. `http://` endpoints).
+     * Hostnames allowed to serve plain `http://`, e.g.
+     * `["sse.internal.example.com"]`.
      *
-     * On iOS adds `NSAppTransportSecurity.NSAllowsArbitraryLoads = true` to
-     * Info.plist. On Android sets `android:usesCleartextTraffic="true"` on
-     * the `<application>` element.
+     * Scoped per domain: iOS gets an `NSExceptionDomains` entry and Android a
+     * `network_security_config.xml` `domain-config`. Everything else keeps its
+     * HTTPS requirement.
      *
-     * **Only enable this if your SSE server uses plain HTTP.**
-     * Default: false.
+     * **Prefer this over `allowCleartext`.**
+     */
+    cleartextDomains?: string[];
+    /**
+     * Allow cleartext HTTP to **every** host in the app.
+     *
+     * On iOS this sets `NSAllowsArbitraryLoads`, which disables App Transport
+     * Security app-wide and needs a written justification during App Store
+     * review; on Android it sets `android:usesCleartextTraffic="true"` on the
+     * whole application.
+     *
+     * Use `cleartextDomains` unless you genuinely need this. Default: false.
      */
     allowCleartext?: boolean;
 };

@@ -11,9 +11,27 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
-import { NativeSSE, SSE_STATE } from 'jose-native-sse';
+import { NativeSSE, SseStreamManager, SSE_STATE } from 'jose-native-sse';
 
 const DEFAULT_URL = 'https://sse.dev/test';
+
+// The hardening scenarios need a server that misbehaves on purpose:
+//   npm run stress:server        (from the repository root)
+// The Android emulator reaches the host machine through 10.0.2.2.
+const STRESS_HOST = Platform.OS === 'android' ? '10.0.2.2' : '127.0.0.1';
+const stressUrl = (path) => `http://${STRESS_HOST}:3000${path}`;
+
+const PRESETS = [
+  { label: 'retry: 0',      path: '/retry-zero', hint: 'server demands no backoff' },
+  { label: 'retry: 9…9',    path: '/retry-huge', hint: 'overflows to Infinity' },
+  { label: 'split UTF-8',   path: '/utf8-split', hint: 'cuts mid-character' },
+  { label: 'well-behaved',  path: '/events',     hint: 'baseline' },
+];
+
+// Floor and ceiling applied to any delay the server asks for. Deliberately
+// visible here so the numbers in the panel can be checked against them.
+const MIN_RECONNECT_MS = 500;
+const MAX_RECONNECT_MS = 10000;
 
 const STATE_COLOR = {
   [SSE_STATE.IDLE]:         '#8E8E93',
@@ -34,6 +52,14 @@ export default function App() {
   const [metrics, setMetrics] = useState(null);
   const metricsTimer = useRef(null);
 
+  // Every reconnect delay the library actually scheduled.
+  const [delays, setDelays] = useState([]);
+
+  // A manager holding streams this screen did NOT create standalone, so the
+  // difference between closeAll() and disconnectAllStreams() is observable.
+  const managerRef = useRef(null);
+  const [managerIds, setManagerIds] = useState([]);
+
   const log = useCallback((text) => {
     const ts = new Date().toLocaleTimeString();
     setMessages((prev) => [`[${ts}] ${text}`, ...prev].slice(0, 50));
@@ -48,6 +74,8 @@ export default function App() {
     }
     clearInterval(metricsTimer.current);
 
+    setDelays([]);
+
     const sse = new NativeSSE(url.trim(), {
       staleTimeoutMs: 15000,
       pauseOnBackground: true,
@@ -57,6 +85,16 @@ export default function App() {
         initialMs: 1000,
         maxMs: 15000,
         jitter: true,
+      },
+      // A `retry:` field is server-controlled input. It is honoured, but only
+      // within these bounds — `retry: 0` would otherwise mean reconnecting with
+      // no backoff at all, and a value big enough to overflow to Infinity
+      // collapses to ~1ms in setTimeout, which is the same loop.
+      minReconnectDelayMs: MIN_RECONNECT_MS,
+      maxReconnectDelayMs: MAX_RECONNECT_MS,
+      onReconnectAttempt: (attempt, delayMs) => {
+        setDelays((prev) => [delayMs, ...prev].slice(0, 12));
+        log(`reconnect #${attempt} in ${delayMs}ms`);
       },
       debug: true,
     });
@@ -116,9 +154,51 @@ export default function App() {
     log('Closed');
   }, [log]);
 
+  // ── SseStreamManager ───────────────────────────────────────────────────────
+
+  const startManagedStreams = useCallback(() => {
+    const manager = managerRef.current ?? new SseStreamManager();
+    managerRef.current = manager;
+
+    for (const id of ['alpha', 'beta']) {
+      manager.create(id, stressUrl('/events'), {
+        // Distinct keys: the default is derived from the URL, and these two
+        // share an endpoint.
+        storageKey: `sse:last-event-id:${id}`,
+        reconnectPolicy: { type: 'fixed', intervalMs: 3000 },
+      });
+    }
+    setManagerIds(manager.ids);
+    log(`manager: started ${manager.ids.join(', ')}`);
+  }, [log]);
+
+  const managerCloseAll = useCallback(() => {
+    const manager = managerRef.current;
+    if (!manager) return;
+    manager.closeAll();
+    setManagerIds(manager.ids);
+    const standalone = sseRef.current?.state ?? 'none';
+    log(`closeAll() -> manager empty; standalone stream is "${standalone}"`);
+  }, [log]);
+
+  const managerDisconnectAll = useCallback(() => {
+    const manager = managerRef.current ?? new SseStreamManager();
+    managerRef.current = manager;
+    manager.disconnectAllStreams();
+    setManagerIds(manager.ids);
+    // The standalone stream was never in this manager, and it is gone too.
+    log('disconnectAllStreams() -> every stream in the process was cut');
+    setTimeout(() => {
+      const st = sseRef.current?.state ?? 'none';
+      log(`  standalone stream is now "${st}"`);
+      setState(sseRef.current?.state ?? SSE_STATE.IDLE);
+    }, 300);
+  }, [log]);
+
   useEffect(() => {
     return () => {
       sseRef.current?.close();
+      managerRef.current?.closeAll();
       clearInterval(metricsTimer.current);
     };
   }, []);
@@ -157,6 +237,22 @@ export default function App() {
           />
         </View>
 
+        <View style={styles.chipRow}>
+          {PRESETS.map((preset) => (
+            <TouchableOpacity
+              key={preset.path}
+              style={styles.chip}
+              onPress={() => {
+                setUrl(stressUrl(preset.path));
+                log(`preset: ${preset.label} — ${preset.hint}`);
+              }}
+              activeOpacity={0.7}
+            >
+              <Text style={styles.chipText}>{preset.label}</Text>
+            </TouchableOpacity>
+          ))}
+        </View>
+
         <View style={styles.stateRow}>
           <View style={[styles.dot, { backgroundColor: STATE_COLOR[state] ?? '#8E8E93' }]} />
           <Text style={styles.stateText}>{state.toUpperCase()}</Text>
@@ -177,6 +273,59 @@ export default function App() {
           <Btn label="Pause"   onPress={handlePause}   disabled={!canPause}   color="#5AC8FA" />
           <Btn label="Resume"  onPress={handleResume}  disabled={!canResume}  color="#FF9500" />
           <Btn label="Close"   onPress={handleClose}   disabled={!canClose}   color="#FF3B30" />
+        </View>
+
+        <Text style={styles.sectionTitle}>
+          RECONNECT DELAYS · floor {MIN_RECONNECT_MS}ms · ceiling {MAX_RECONNECT_MS}ms
+        </Text>
+        <View style={styles.panel}>
+          {delays.length === 0 ? (
+            <Text style={styles.panelHint}>
+              Pick “retry: 0” or “retry: 9…9” and connect. The server asks for a
+              delay that would spin; every value below is what was actually
+              scheduled.
+            </Text>
+          ) : (
+            <>
+              <View style={styles.delayRow}>
+                {delays.map((d, i) => (
+                  <Text
+                    key={i}
+                    style={[
+                      styles.delayPill,
+                      d < MIN_RECONNECT_MS * 0.8 && styles.delayPillBad,
+                    ]}
+                  >
+                    {d}ms
+                  </Text>
+                ))}
+              </View>
+              <Text style={styles.panelHint}>
+                min {Math.min(...delays)}ms · jitter is ±20%, so the floor shows
+                as ≥{Math.round(MIN_RECONNECT_MS * 0.8)}ms. Anything red would be
+                the unclamped bug.
+              </Text>
+            </>
+          )}
+        </View>
+
+        <Text style={styles.sectionTitle}>STREAM MANAGER</Text>
+        <View style={styles.panel}>
+          <Text style={styles.panelHint}>
+            {managerIds.length > 0
+              ? `Managed: ${managerIds.join(', ')} — plus the standalone stream above, which this manager does not own.`
+              : 'Start two managed streams, then compare the two teardowns against the standalone stream above.'}
+          </Text>
+          <View style={styles.controls}>
+            <Btn label="Start 2 streams" onPress={startManagedStreams} color="#34C759" />
+            <Btn label="closeAll()" onPress={managerCloseAll} disabled={managerIds.length === 0} color="#5AC8FA" />
+            <Btn label="disconnectAllStreams()" onPress={managerDisconnectAll} color="#FF3B30" />
+          </View>
+          <Text style={styles.panelHint}>
+            closeAll() leaves the standalone stream running. disconnectAllStreams()
+            cuts every stream in the process, including ones it never created —
+            which is why it is a separate method now.
+          </Text>
         </View>
 
         <Text style={styles.logTitle}>EVENT LOG</Text>
@@ -241,6 +390,15 @@ const styles = StyleSheet.create({
   btn:          { flex: 1, minWidth: '42%', paddingVertical: 12, borderRadius: 10, alignItems: 'center' },
   btnText:      { color: '#FFFFFF', fontWeight: '600', fontSize: 15 },
   logTitle:     { fontSize: 12, fontWeight: '600', color: '#8E8E93', paddingHorizontal: 20, marginBottom: 6, letterSpacing: 1 },
+  sectionTitle: { fontSize: 12, fontWeight: '600', color: '#8E8E93', paddingHorizontal: 20, marginBottom: 6, letterSpacing: 1 },
+  chipRow:      { flexDirection: 'row', flexWrap: 'wrap', paddingHorizontal: 20, gap: 8 },
+  chip:         { backgroundColor: '#2C2C2E', borderRadius: 8, paddingHorizontal: 10, paddingVertical: 6 },
+  chipText:     { color: '#0A84FF', fontSize: 12, fontWeight: '600', fontFamily: 'Menlo' },
+  panel:        { marginHorizontal: 20, backgroundColor: '#2C2C2E', borderRadius: 12, padding: 12, marginBottom: 16 },
+  panelHint:    { fontSize: 11, color: '#8E8E93', lineHeight: 16 },
+  delayRow:     { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginBottom: 8 },
+  delayPill:    { backgroundColor: '#1C1C1E', color: '#34C759', fontSize: 12, fontFamily: 'Menlo', paddingHorizontal: 8, paddingVertical: 4, borderRadius: 6, overflow: 'hidden' },
+  delayPillBad: { color: '#FF3B30' },
   log:          { flex: 1, marginHorizontal: 20, backgroundColor: '#2C2C2E', borderRadius: 12, marginBottom: 16 },
   logContent:   { padding: 12 },
   logLineWrap:  { paddingVertical: 2 },

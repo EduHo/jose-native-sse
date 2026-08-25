@@ -10,8 +10,9 @@ Pod::Spec.new do |s|
   s.license      = package["license"]
   s.authors      = package["author"]
 
-  s.platforms    = { :ios => "13.0" }
-  s.source       = { :git => "https://github.com/your-username/jose-native-sse.git", :tag => "#{s.version}" }
+  # React Native 0.86 (Expo SDK 57) requires iOS 15.1 as the deployment target.
+  s.platforms    = { :ios => "15.1" }
+  s.source       = { :git => "https://github.com/EduHo/jose-native-sse.git", :tag => "#{s.version}" }
 
   s.source_files = "ios/**/*.{h,m,mm,swift}"
   s.exclude_files = "ios/build"

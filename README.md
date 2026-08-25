@@ -69,8 +69,9 @@ The browser `EventSource` API does not exist in React Native. Common workarounds
 5. [Recipes](#recipes)
 6. [TypeScript](#typescript)
 7. [New Architecture](#new-architecture)
-8. [Contributing](#contributing)
-9. [License](#license)
+8. [Limits and hardening](#limits-and-hardening)
+9. [Contributing](#contributing)
+10. [License](#license)
 
 ---
 
@@ -81,6 +82,24 @@ npm install jose-native-sse
 # or
 yarn add jose-native-sse
 ```
+
+### Requirements
+
+| | Minimum |
+|---|---|
+| React Native | 0.76 (New Architecture) |
+| Expo SDK | 52 |
+| iOS deployment target | 15.1 |
+| Android `compileSdk` / `minSdk` | 36 / 24 |
+| Node (for building the library) | 20.19.4 |
+
+The numbers above are the minimums the library itself declares. Your app's own
+React Native / Expo version sets the effective values and they are usually
+higher — an Expo SDK 57 app, for instance, prebuilds with an iOS deployment
+target of 16.4.
+
+Verified against **Expo SDK 57** / **React Native 0.86.2** on both platforms
+(Gradle `assembleDebug` with Codegen, and `pod install` with Codegen).
 
 ---
 
@@ -102,19 +121,30 @@ The library ships a built-in **Expo config plugin** that handles native configur
 
 The plugin always adds the `android.permission.INTERNET` permission to `AndroidManifest.xml`.
 
-If your SSE server uses plain `http://` (not `https://`), pass `allowCleartext: true`:
+If your SSE server uses plain `http://` (not `https://`), name the hosts that
+need it:
 
 ```json
 {
   "expo": {
-    "plugins": [["jose-native-sse", { "allowCleartext": true }]]
+    "plugins": [
+      ["jose-native-sse", { "cleartextDomains": ["sse.internal.example.com"] }]
+    ]
   }
 }
 ```
 
-With `allowCleartext: true` the plugin additionally sets:
-- iOS: `NSAllowsArbitraryLoads: true` in `Info.plist`
-- Android: `android:usesCleartextTraffic="true"` on the `<application>` element
+Per domain, so every other host keeps its HTTPS requirement:
+- iOS: an `NSExceptionDomains` entry in `Info.plist`; App Transport Security
+  stays enabled
+- Android: a `network_security_config.xml` `domain-config`, referenced from the
+  manifest
+
+There is also `allowCleartext: true`, which permits cleartext to **every** host.
+On iOS that means `NSAllowsArbitraryLoads`, which disables App Transport Security
+app-wide and requires a written justification during App Store review; on Android
+it sets `android:usesCleartextTraffic="true"` for the whole application. Prefer
+`cleartextDomains` unless you genuinely need it.
 
 #### 2. Run prebuild and build
 
@@ -128,11 +158,20 @@ eas build --profile development
 
 #### Expo Go
 
-The native TurboModule is not available in Expo Go. The library detects this automatically and falls back to an **XHR transport** — same JS API, same reconnect logic, same event callbacks. No code changes needed.
+The native TurboModule is not available in Expo Go. The library detects this and
+falls back automatically — same JS API, same reconnect logic, same event
+callbacks, no code changes.
+
+It prefers **streaming fetch** and drops to **XHR** only where the runtime cannot
+stream a response body. That order matters: `XMLHttpRequest.responseText` holds
+the entire response for the life of the connection, so on a long-lived SSE stream
+it grows until the process runs out of memory. When XHR is the only option, the
+stream force-reconnects past `xhrMaxBufferBytes` (4 MB by default) to release the
+buffer, resuming from `Last-Event-ID`.
 
 ```ts
 const sse = new NativeSSE(url, { debug: true });
-// Console: "[NativeSSE] Native module not available — using XHR fallback transport."
+// Console: "[NativeSSE] Native module not available — using FETCH fallback transport."
 
 if (sse.usingFallback) {
   // Running in Expo Go or with native module absent
@@ -143,9 +182,14 @@ To force a specific transport for testing:
 
 ```ts
 new NativeSSE(url, { transport: 'xhr' });    // always XHR
-new NativeSSE(url, { transport: 'fetch' });  // always Fetch API
-new NativeSSE(url, { transport: 'native' }); // always native (throws in Expo Go)
+new NativeSSE(url, { transport: 'fetch' });  // always Fetch; throws without streaming support
+new NativeSSE(url, { transport: 'native' }); // always native; throws in Expo Go
 ```
+
+`transport: 'fetch'` throws in the constructor on a runtime without
+`ReadableStream`. Reading a stream that never ends would otherwise require
+`response.text()`, which never resolves — the connection would sit there
+delivering nothing and reporting no error.
 
 ### Bare React Native
 
@@ -155,15 +199,29 @@ cd ios && pod install
 
 No extra Android steps — OkHttp is already bundled with React Native.
 
-If your SSE server uses `http://`, add the App Transport Security exception to `Info.plist`:
+If your SSE server uses `http://`, add an App Transport Security exception for
+that host to `Info.plist` — scoped to the domain, so the rest of the app keeps
+its HTTPS requirement:
 
 ```xml
 <key>NSAppTransportSecurity</key>
 <dict>
-  <key>NSAllowsArbitraryLoads</key>
-  <true/>
+  <key>NSExceptionDomains</key>
+  <dict>
+    <key>sse.internal.example.com</key>
+    <dict>
+      <key>NSExceptionAllowsInsecureHTTPLoads</key>
+      <true/>
+    </dict>
+  </dict>
 </dict>
 ```
+
+Avoid `NSAllowsArbitraryLoads`: it disables App Transport Security for every host
+in the app and requires a written justification during App Store review. On
+Android, prefer a `network_security_config.xml` `domain-config` over
+`android:usesCleartextTraffic="true"` for the same reason. (With Expo, the config
+plugin writes both for you — pass `cleartextDomains`.)
 
 Ensure your `AndroidManifest.xml` declares the `INTERNET` permission:
 
@@ -171,13 +229,8 @@ Ensure your `AndroidManifest.xml` declares the `INTERNET` permission:
 <uses-permission android:name="android.permission.INTERNET" />
 ```
 
-With the New Architecture enabled, the package registers automatically via Codegen. If you are on the legacy architecture, register it manually:
-
-```kotlin
-// MainApplication.kt
-override fun getPackages(): List<ReactPackage> =
-  PackageList(this).packages + listOf(NativeSsePackage())
-```
+The package registers automatically via Codegen and autolinking — no
+`MainApplication.kt` changes are needed.
 
 ---
 
@@ -265,11 +318,12 @@ import { useNativeSSE } from 'jose-native-sse';
 const result = useNativeSSE(url: string, options?: UseNativeSSEOptions)
 ```
 
-`UseNativeSSEOptions` extends `SseConnectOptions` with one extra field:
+`UseNativeSSEOptions` extends `SseConnectOptions` with two extra fields:
 
 | Field | Type | Default | Description |
 |---|---|---|---|
 | `enabled` | `boolean` | `true` | Set to `false` to skip connecting (useful for auth-gated streams). |
+| `metricsIntervalMs` | `number` | `1000` | How often to refresh the `metrics` snapshot. Metrics also refresh on every state change and error. |
 
 `UseNativeSSEResult` — reactive fields:
 
@@ -277,10 +331,11 @@ const result = useNativeSSE(url: string, options?: UseNativeSSEOptions)
 |---|---|---|
 | `state` | `SseState` | Current fine-grained connection state. |
 | `readyState` | `0 \| 1 \| 2` | Browser-compatible ready state. |
-| `lastMessage` | `SseMessageEvent \| null` | Most recently received message. `null` until the first message arrives. |
+| `lastMessage` | `SseMessageEvent \| null` | Most recent message — **a preview, not a log**. See below. |
 | `lastBatch` | `SseMessageEvent[] \| null` | Most recently flushed batch. Only set when `batch.enabled: true`; `null` otherwise. |
 | `lastError` | `SseErrorEvent \| null` | Most recent error. `null` if no error has occurred. |
-| `metrics` | `StreamMetrics` | Snapshot updated on each message and state transition. |
+| `metrics` | `StreamMetrics` | Snapshot, refreshed on state changes and on `metricsIntervalMs`. |
+| `sse` | `NativeSSE \| null` | The underlying stream. `null` before the first connection is created. |
 
 `UseNativeSSEResult` — imperative controls:
 
@@ -293,6 +348,30 @@ const result = useNativeSSE(url: string, options?: UseNativeSSEOptions)
 
 The connection is opened on mount, closed on unmount, and reconnected when `url` or `enabled` changes.
 
+#### `lastMessage` shows the latest event, not every event
+
+React coalesces state updates, so when several events land in the same tick only
+the last one is ever rendered. That is fine for a status badge or a live counter,
+and wrong for anything that must see every event — accumulating tokens from an
+LLM, appending to a list.
+
+For those, read from the stream itself:
+
+```tsx
+const { sse, state } = useNativeSSE(url);
+const [text, setText] = useState('');
+
+useEffect(() => {
+  if (!sse) return;
+  const onMessage = (e: SseMessageEvent) => setText((t) => t + e.data);
+  sse.addEventListener('message', onMessage);
+  return () => sse.removeEventListener('message', onMessage);
+}, [sse]);
+```
+
+For high-frequency streams also pass `batch: { enabled: true }` and read
+`lastBatch`, which delivers whole groups instead of one render per event.
+
 ---
 
 ### Options
@@ -303,11 +382,22 @@ interface SseConnectOptions {
   method?:   'GET' | 'POST' | 'PUT' | 'PATCH' | 'DELETE'; // default: 'GET'
   headers?:  Record<string, string>;
   body?:     string;   // only sent for non-GET requests
-  timeout?:  number;   // request timeout in ms; 0 = none (default)
+  timeout?:  number;
+  // Connection-establishment timeout in ms; 0 = platform default.
+  // NOT a read timeout: silence is normal on an SSE stream. Use
+  // staleTimeoutMs to detect a connection that stopped delivering.
 
   // ── Reconnect ─────────────────────────────────────────────────────────────
   reconnectPolicy?: ReconnectPolicy;    // see below
+  reconnectInterval?: number;
+  // Deprecated V1 alias: equivalent to { type: 'fixed', intervalMs: n }.
+  // reconnectPolicy wins if both are set.
   maxReconnectAttempts?: number;        // -1 = infinite (default)
+  respectServerRetry?: boolean;
+  // Honour the server's `retry:` field. Always clamped and jittered — see
+  // "Server-controlled reconnect delay" below. Default: true.
+  minReconnectDelayMs?: number;  // floor for any delay; default: 500
+  maxReconnectDelayMs?: number;  // ceiling for any delay; default: 300 000 (5 min)
 
   // ── Stale detection ───────────────────────────────────────────────────────
   staleTimeoutMs?: number;
@@ -323,17 +413,35 @@ interface SseConnectOptions {
 
   // ── Transport ─────────────────────────────────────────────────────────────
   transport?: 'auto' | 'native' | 'xhr' | 'fetch';
-  // 'auto'   (default): native TurboModule when available, XHR otherwise.
-  // 'native': always native (throws at runtime if the module is absent).
-  // 'xhr':    always XHR.
-  // 'fetch':  Fetch API + ReadableStream — no responseText memory accumulation.
-  maxLineLength?: number; // max bytes per SSE line; default: 1 048 576 (1 MB)
+  // 'auto'   (default): native TurboModule when available; otherwise streaming
+  //          fetch, falling back to XHR only where ReadableStream is missing.
+  // 'native': always native (throws in the constructor if the module is absent).
+  // 'xhr':    always XHR. See xhrMaxBufferBytes.
+  // 'fetch':  Fetch API + ReadableStream. Throws in the constructor if the
+  //           runtime cannot stream a response body.
+  xhrMaxBufferBytes?: number;
+  // XHR only. `responseText` keeps the whole response for the life of the
+  // connection, so the stream force-reconnects past this many bytes to release
+  // it. Last-Event-ID resumes, so no events are lost. Default: 4 194 304 (4 MB).
+
+  // ── Parser limits (all enforced in JS) ────────────────────────────────────
+  maxLineLength?: number;
+  // Max length of one SSE line. A longer line is dropped along with everything
+  // up to the next terminator. Default: 1 048 576 (1 MB).
+  maxEventSize?: number;
+  // Max accumulated `data:` payload for a single event. Bounds a server that
+  // never sends a blank line. Default: 4 194 304 (4 MB).
+  maxIdLength?: number;
+  // Max length of `id:`, which is echoed back in the Last-Event-ID header on
+  // every reconnect. Longer ids are ignored. Default: 1024.
 
   // ── Last-Event-ID persistence ─────────────────────────────────────────────
   persistLastEventId?: boolean;
   // Persist the last event ID so reconnects after an app restart resume
   // from where they left off. Default: false (in-memory only).
-  storageKey?:     string;         // default: 'sse:last-event-id'
+  storageKey?:     string;
+  // Default is derived from the URL — `sse:last-event-id:<origin><pathname>` —
+  // so two streams do not overwrite each other's resume position.
   storageAdapter?: StorageAdapter; // default: InMemoryStorageAdapter
 
   // ── Lifecycle ─────────────────────────────────────────────────────────────
@@ -385,6 +493,28 @@ type ExponentialReconnectPolicy = {
 };
 ```
 
+#### Server-controlled reconnect delay
+
+A server can set the reconnect delay by sending a `retry:` field, and per the
+SSE spec the client honours it. It is server-controlled input, so it is not
+scheduled verbatim:
+
+| | |
+|---|---|
+| Non-numeric, negative, or non-finite | Ignored; the configured policy applies |
+| Below `minReconnectDelayMs` | Raised to the floor |
+| Above `maxReconnectDelayMs` | Lowered to the ceiling |
+| Accepted values | Jittered ±20 % before scheduling |
+
+The floor exists because `retry: 0` otherwise means reconnecting with no backoff
+at all. The finite check exists because a value long enough to overflow to
+`Infinity` collapses to roughly 1 ms in `setTimeout` — the same tight loop by the
+opposite route. Jitter is applied because every client receives the same number,
+so scheduling it as-is synchronises the whole fleet onto one instant.
+
+Set `respectServerRetry: false` to ignore the field entirely and always use your
+own policy.
+
 #### Network observer interface
 
 ```ts
@@ -435,7 +565,21 @@ interface StorageAdapter {
 
   close() from any state → CLOSED  (terminal)
   max retries exceeded   → FAILED  (terminal)
+  reconnect()            → CONNECTING directly, from any live state
 ```
+
+Two rules the diagram does not show:
+
+- **`CLOSED` and `FAILED` are final.** A callback still in flight when the stream
+  reaches either state is dropped: it cannot re-emit `onerror`, schedule a
+  reconnect, or move the state. `close()` is idempotent, and `close()` on a
+  failed stream is allowed as resource release.
+- **`reconnect()` skips `RECONNECTING`.** It is a user-initiated restart that
+  bypasses the backoff entirely, so it transitions straight to `CONNECTING` from
+  `open`, `connecting`, `stale`, `reconnecting`, or `paused`.
+
+Invalid transitions throw under test (`NODE_ENV=test`) and warn in development,
+so a lifecycle bug fails the suite rather than printing into a log nobody reads.
 
 ```ts
 import { SSE_STATE } from 'jose-native-sse';
@@ -546,7 +690,7 @@ type SseErrorCode =
   | 'NETWORK_ERROR'        // TCP / DNS failure — retryable
   | 'HTTP_ERROR'           // Non-2xx status — fatal for 4xx, retryable for 5xx
   | 'TIMEOUT_ERROR'        // Request timed out or stale connection — retryable
-  | 'PARSE_ERROR'          // Malformed SSE / buffer overflow — retryable
+  | 'PARSE_ERROR'          // Line/event/id limit exceeded — retryable
   | 'INVALID_URL'          // URL could not be parsed — fatal
   | 'MAX_RETRIES_EXCEEDED' // Reconnect limit reached — fatal
   | 'ABORTED';             // Cancelled by pause() / close() — no reconnect
@@ -569,6 +713,11 @@ sse.onerror = (e) => {
   // e.retryable === true → library is scheduling the next attempt automatically
 };
 ```
+
+`PARSE_ERROR` is reported, but never fatal — the parser recovers and keeps
+reading. It fires when a limit is hit: a line over `maxLineLength`, an event over
+`maxEventSize`, an `id:` over `maxIdLength`, or a non-finite `retry:` value. Treat
+it as a signal about the server, not a reason to tear the stream down.
 
 ---
 
@@ -609,11 +758,21 @@ const manager = new SseStreamManager();
 | `remove(id)` | `boolean` | Close and remove a stream |
 | `pauseAll()` | `void` | Pause every registered stream |
 | `resumeAll()` | `void` | Resume every paused stream |
-| `closeAll()` | `void` | Close all streams and clear the registry |
+| `closeAll()` | `void` | Close this manager's streams and clear the registry |
+| `disconnectAllStreams()` | `void` | Close **every** SSE stream in the process — see below |
 | `getAllMetrics()` | `Map<string, StreamMetrics>` | Metrics per stream |
 | `getAggregateMetrics()` | `AggregateMetrics` | Totals across all streams |
 | `size` | `number` | Number of registered streams |
 | `ids` | `string[]` | All registered stream IDs |
+
+`closeAll()` touches only the streams this manager created. `disconnectAllStreams()`
+additionally issues a process-wide native disconnect, which also tears down
+streams created with `new NativeSSE()` directly or held by another manager —
+useful on logout or app shutdown, wrong anywhere else.
+
+Give each stream its own `storageKey` if more than one uses
+`persistLastEventId`. The default key is derived from the URL, so distinct
+endpoints are already isolated; two streams on the *same* endpoint are not.
 
 ---
 
@@ -872,6 +1031,22 @@ function ChatStream() {
 }
 ```
 
+`lastBatch` is subject to the same coalescing as `lastMessage`, just far less
+often: two flushes landing in the same React tick means only the second is
+observed. At the default 16 ms flush interval that is rare, but it is not a
+guarantee. When losing a batch is unacceptable, subscribe instead — `onbatch`
+fires for every flush:
+
+```tsx
+const { sse } = useNativeSSE(url, { batch: { enabled: true } });
+
+useEffect(() => {
+  if (!sse) return;
+  sse.onbatch = (events) => setOutput(prev => prev + events.map(e => e.data).join(''));
+  return () => { sse.onbatch = null; };
+}, [sse]);
+```
+
 ---
 
 ### AI token streaming (batch mode)
@@ -984,7 +1159,10 @@ presence.onmessage = (e) => updatePresence(JSON.parse(e.data));
 
 manager.pauseAll();   // app goes to background
 manager.resumeAll();  // app returns
-manager.closeAll();   // user logs out
+
+// On logout, nothing should survive — including streams this manager did not
+// create. closeAll() would leave those running.
+manager.disconnectAllStreams();
 
 const { totalEventsReceived, totalBytesReceived, totalReconnects } =
   manager.getAggregateMetrics();
@@ -1069,17 +1247,20 @@ import {
 
 The library targets the React Native New Architecture (TurboModules + Codegen).
 
-```ruby
-# ios/Podfile
-use_react_native!(:new_arch_enabled => true)
-```
+Since **React Native 0.82** the New Architecture is the only architecture, so
+there is nothing to enable — the `newArchEnabled` Gradle property and the
+Podfile's `:new_arch_enabled` flag are both obsolete and can be removed from
+your app.
 
-```properties
-# android/gradle.properties
-newArchEnabled=true
-```
+The Codegen spec is in `src/NativeNativeSse.ts`. The toolchain generates the
+C++ / ObjC++ / Kotlin bridge at build time. The JS layer resolves the module
+through `TurboModuleRegistry`, which falls back to the legacy `NativeModules`
+registry on RN versions that still have one.
 
-The Codegen spec is in `src/NativeNativeSse.ts`. The toolchain generates the C++ / ObjC++ / Kotlin bridge at build time. The legacy bridge is also supported — the JS module detects which is available at runtime.
+The native layer is a **pure transport**: it opens the HTTP connection and
+forwards decoded text. Every SSE limit (`maxLineLength`, `maxEventSize`,
+`maxIdLength`) is enforced by `SseParser` in JS, so those options never cross the
+bridge.
 
 ---
 
@@ -1107,19 +1288,93 @@ The Codegen spec is in `src/NativeNativeSse.ts`. The toolchain generates the C++
 
 ---
 
+## Limits and hardening
+
+An SSE stream is input from a server, and a client that trusts it without limits
+can be steered by it. Every bound below is on by default and configurable; the
+defaults are meant to be generous enough that a well-behaved server never
+notices them.
+
+| Limit | Default | What it bounds |
+|---|---|---|
+| `maxLineLength` | 1 MB | One SSE line. A longer line is dropped **along with everything up to the next terminator**, so the tail of an over-long line is never re-read as a fresh set of fields. |
+| `maxEventSize` | 4 MB | One event's accumulated `data:`. Without it, a server that never sends a blank line grows the buffer without limit. |
+| `maxIdLength` | 1024 | `id:`, which is echoed back in the `Last-Event-ID` header on every reconnect. |
+| `minReconnectDelayMs` | 500 | The floor on any reconnect delay, including one the server asked for via `retry:`. |
+| `maxReconnectDelayMs` | 5 min | The ceiling on the same. |
+| `xhrMaxBufferBytes` | 4 MB | How much the XHR fallback may accumulate in `responseText` before force-reconnecting to release it. |
+
+Beyond the configurable limits:
+
+- **Redirects do not carry credentials off-origin.** `Authorization`, `Cookie`,
+  and `Proxy-Authorization` are stripped when a redirect changes scheme, host, or
+  port, on both platforms — a server-chosen `Location` cannot harvest the token
+  you set for the original host.
+- **Text is decoded incrementally.** Both native layers carry a partial UTF-8
+  sequence across read boundaries. Decoding each read in isolation corrupts
+  non-ASCII content, which for a token stream means roughly every few KB.
+- **`retry:` is validated before it is scheduled.** See
+  [Server-controlled reconnect delay](#server-controlled-reconnect-delay).
+- **Error messages do not reproduce URLs.** SSE endpoints routinely carry a token
+  in the query string, and exception text ends up in logs and crash reports, so
+  only the origin is reported.
+
+What this does **not** do: certificate pinning, and any validation of event
+payloads. Treat `event.data` as untrusted input — parse it defensively, and never
+feed it to anything that evaluates code.
+
+---
+
 ## Contributing
 
 ```sh
-git clone https://github.com/EduardoGoncalves/jose-native-sse.git
+git clone https://github.com/EduHo/jose-native-sse.git
 cd jose-native-sse
 npm install
 
-npm test          # run tests
+npm test          # unit tests
 npm test -- --watch
 npm run typecheck
+npm run lint
+```
+
+### Stress suite
+
+`stress/` drives the library against a deliberately hostile SSE server over real
+sockets — split UTF-8 sequences, over-long lines, events that never terminate,
+server-controlled `retry:` values. It is separate from `npm test` so the unit
+suite stays a statement about intended behaviour.
+
+```sh
+npm run stress          # boots the server, runs the JS scenarios, shuts it down
+npm run stress:android  # the Kotlin transport, via MockWebServer on the JVM
+```
+
+The Android half matters because the UTF-8 defect it covers only exists in the
+interaction between OkHttp's read buffer and Kotlin's decoder — it cannot be
+observed from JS. See [stress/README.md](./stress/README.md).
+
+### Running the example app
+
+`example-expo/` uses Continuous Native Generation, so its `android/` and `ios/`
+folders are not committed — generate them first:
+
+```sh
+cd example-expo
+npm install
+npx expo prebuild --clean
+npx expo run:ios      # or: npx expo run:android
 ```
 
 Before opening a PR: all tests must pass, new features need tests, follow the existing code style.
+
+---
+
+## Changelog
+
+See [CHANGELOG.md](./CHANGELOG.md). **0.3.0** is a security and correctness
+release with breaking changes — read the *Changed — breaking* section before
+upgrading.
 
 ---
 

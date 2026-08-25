@@ -1,6 +1,7 @@
-import { NativeEventEmitter, NativeModules, Platform } from 'react-native';
+import { NativeEventEmitter, Platform } from 'react-native';
 import type { EmitterSubscription } from 'react-native';
 import { AppLifecycleManager } from './AppLifecycleManager';
+import NativeNativeSse from './NativeNativeSse';
 import { NetworkMonitor } from './NetworkMonitor';
 import { StateMachine } from './StateMachine';
 import { computeDelay, resolvePolicy } from './reconnect';
@@ -30,16 +31,119 @@ import type {
 
 // ─── Native module resolution ─────────────────────────────────────────────────
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const isTurboModuleEnabled = !!(global as any).__turboModuleProxy;
-/* eslint-disable @typescript-eslint/no-var-requires */
-const NativeNativeSse = isTurboModuleEnabled
-  ? require('./NativeNativeSse').default
-  : NativeModules.NativeNativeSse;
-/* eslint-enable @typescript-eslint/no-var-requires */
+// `NativeNativeSse` comes from `TurboModuleRegistry.get`, which resolves through
+// the TurboModule proxy and already falls back to the legacy `NativeModules`
+// registry — so no architecture branching is needed here. Branching on
+// `global.__turboModuleProxy` was also unreliable in bridgeless mode (RN 0.82+),
+// where that global can be absent.
 
 const emitter =
   NativeNativeSse != null ? new NativeEventEmitter(NativeNativeSse) : null;
+
+// ─── Streaming-fetch capability ───────────────────────────────────────────────
+
+/**
+ * Whether `fetch` can deliver a body incrementally. Without this, a fetch
+ * response can only be read with `response.text()`, which never resolves for a
+ * stream that does not end — so the transport must not be selected at all.
+ */
+const STREAMING_FETCH_AVAILABLE: boolean = (() => {
+  try {
+    return (
+      typeof fetch === 'function' &&
+      typeof ReadableStream !== 'undefined' &&
+      typeof TextDecoder !== 'undefined' &&
+      typeof Response !== 'undefined' &&
+      'body' in Response.prototype
+    );
+  } catch {
+    return false;
+  }
+})();
+
+// ─── Native event demultiplexer ───────────────────────────────────────────────
+
+/**
+ * Native events carry a `streamId`, so a single set of listeners can route them.
+ *
+ * Registering four listeners per NativeSSE instance meant every chunk was
+ * delivered to every listener of every open stream, each discarding it after a
+ * string compare — O(streams) work per chunk. This keeps it O(1).
+ */
+interface NativeStreamHandlers {
+  open: (e: NativeOpenEvent) => void;
+  chunk: (e: NativeChunkEvent) => void;
+  error: (e: NativeErrorEvent) => void;
+  close: (e: NativeCloseEvent) => void;
+}
+
+const streamRegistry = new Map<string, NativeStreamHandlers>();
+let nativeSubscriptions: EmitterSubscription[] = [];
+
+function ensureNativeWiring(): void {
+  if (!emitter || nativeSubscriptions.length > 0) return;
+  nativeSubscriptions = [
+    emitter.addListener('sse_open', (e: NativeOpenEvent) =>
+      streamRegistry.get(e.streamId)?.open(e),
+    ),
+    emitter.addListener('sse_chunk', (e: NativeChunkEvent) =>
+      streamRegistry.get(e.streamId)?.chunk(e),
+    ),
+    emitter.addListener('sse_error', (e: NativeErrorEvent) =>
+      streamRegistry.get(e.streamId)?.error(e),
+    ),
+    emitter.addListener('sse_close', (e: NativeCloseEvent) =>
+      streamRegistry.get(e.streamId)?.close(e),
+    ),
+  ];
+}
+
+function registerStream(streamId: string, handlers: NativeStreamHandlers): void {
+  ensureNativeWiring();
+  streamRegistry.set(streamId, handlers);
+}
+
+function unregisterStream(streamId: string): void {
+  streamRegistry.delete(streamId);
+  // The shared listeners exist only while something is routing through them.
+  // Reconnects register the new id before releasing the old one, so this does
+  // not churn on every reconnect.
+  if (streamRegistry.size === 0) {
+    for (const sub of nativeSubscriptions) sub.remove();
+    nativeSubscriptions = [];
+  }
+}
+
+/** Test seam: drop the shared listeners and every routing entry. */
+export function __resetNativeWiring(): void {
+  for (const sub of nativeSubscriptions) sub.remove();
+  nativeSubscriptions = [];
+  streamRegistry.clear();
+}
+
+/**
+ * A URL reduced to what is safe to put in an error message. SSE endpoints often
+ * carry credentials in the query string, so never reproduce one verbatim.
+ */
+function safeUrlLabel(url: unknown): string {
+  if (typeof url !== 'string') return `type ${typeof url}`;
+  try {
+    return new URL(url).origin;
+  } catch {
+    // Unparseable: report only its shape, never its contents.
+    return `${url.length} chars, no parseable origin`;
+  }
+}
+
+/** Default Last-Event-ID storage key, scoped to the stream's own endpoint. */
+function defaultStorageKey(url: string): string {
+  try {
+    const u = new URL(url);
+    return `sse:last-event-id:${u.origin}${u.pathname}`;
+  } catch {
+    return 'sse:last-event-id';
+  }
+}
 
 // ─── Stream ID generator ─────────────────────────────────────────────────────
 
@@ -140,7 +244,6 @@ export class NativeSSE {
   private _reconnectTimer: ReturnType<typeof setTimeout> | null = null;
   private _staleTimer: ReturnType<typeof setTimeout> | null = null;
   private _networkBlocked = false;
-  private _subscriptions: EmitterSubscription[] = [];
   // Reconnect interval sent by the server via `retry:` field.
   // Overrides the configured policy for all subsequent reconnects.
   private _serverRetryMs: number | null = null;
@@ -187,8 +290,11 @@ export class NativeSSE {
         throw new TypeError(`Unsupported protocol "${parsed.protocol}"`);
       }
     } catch {
+      // Only the scheme and host: SSE URLs routinely carry a token in the query
+      // string, and exception messages end up in logs and crash reports.
       throw new TypeError(
-        `[NativeSSE] Invalid URL: "${url}". Must be an absolute URL with http:// or https://.`,
+        `[NativeSSE] Invalid URL (${safeUrlLabel(url)}). ` +
+          'Must be an absolute URL with http:// or https://.',
       );
     }
 
@@ -206,12 +312,22 @@ export class NativeSSE {
       this._useFallback  = true;
       this._fallbackType = 'xhr';
     } else if (t === 'fetch') {
+      if (!STREAMING_FETCH_AVAILABLE) {
+        throw new Error(
+          '[NativeSSE] transport: "fetch" requires streaming response bodies ' +
+          '(ReadableStream), which this runtime does not provide. Without them a ' +
+          'fetch response can only be read after the stream ends, so no event would ' +
+          'ever be delivered. Use transport: "auto" or "xhr".',
+        );
+      }
       this._useFallback  = true;
       this._fallbackType = 'fetch';
     } else {
-      // 'auto': prefer native module, fall back to XHR when absent.
+      // 'auto': native first. Otherwise prefer streaming fetch — the XHR path
+      // has to keep the whole response in `responseText` for the life of the
+      // connection, so it grows without bound on a long-lived stream.
       this._useFallback  = !NativeNativeSse;
-      this._fallbackType = 'xhr';
+      this._fallbackType = STREAMING_FETCH_AVAILABLE ? 'fetch' : 'xhr';
     }
 
     if (this._useFallback && options.debug) {
@@ -231,7 +347,9 @@ export class NativeSSE {
       ? new EventBatcher(options.batch, (evts) => this._deliverBatch(evts))
       : null;
     this._storageAdapter = options.storageAdapter ?? new InMemoryStorageAdapter();
-    this._storageKey     = options.storageKey ?? 'sse:last-event-id';
+    // Scoped to the endpoint: a single shared key made concurrent streams
+    // overwrite each other's resume position.
+    this._storageKey     = options.storageKey ?? defaultStorageKey(url);
 
     this._sm = new StateMachine(SSE_STATE.IDLE);
 
@@ -283,6 +401,9 @@ export class NativeSSE {
 
   close(): void {
     const prev = this._sm.state;
+    // Idempotent: a second close() must not re-run teardown or re-emit a
+    // stateChange for a stream that is already gone.
+    if (prev === SSE_STATE.CLOSED) return;
     this._transition(SSE_STATE.CLOSED);
     this._cleanup(/* removeAll */ true);
     if (prev !== SSE_STATE.IDLE && !this._useFallback) {
@@ -411,6 +532,10 @@ export class NativeSSE {
 
   private _onError = (raw: NativeErrorEvent): void => {
     if (raw.streamId !== this._streamId) return;
+    // A callback still in flight when the stream reached a terminal state must
+    // not report, reconnect, or transition — CLOSED and FAILED are final.
+    const prev = this._sm.state;
+    if (prev === SSE_STATE.CLOSED || prev === SSE_STATE.FAILED) return;
 
     const err = this._buildError(raw);
     this._metrics.lastError = err;
@@ -419,7 +544,7 @@ export class NativeSSE {
     this._dispatch('error', err);
 
     const s = this._sm.state;
-    if (raw.isFatal || s === SSE_STATE.CLOSED) {
+    if (raw.isFatal) {
       this._transition(SSE_STATE.FAILED);
       this._cleanup(true);
       this._opts.onFatalError?.(err);
@@ -443,12 +568,12 @@ export class NativeSSE {
 
   private _attachNativeListeners(): void {
     if (!emitter) return;
-    this._subscriptions.push(
-      emitter.addListener('sse_open',  this._onOpen),
-      emitter.addListener('sse_chunk', this._onChunk),
-      emitter.addListener('sse_error', this._onError),
-      emitter.addListener('sse_close', this._onClose),
-    );
+    registerStream(this._streamId, {
+      open: this._onOpen,
+      chunk: this._onChunk,
+      error: this._onError,
+      close: this._onClose,
+    });
   }
 
   // ── XHR fallback transport ───────────────────────────────────────────────────
@@ -468,6 +593,8 @@ export class NativeSSE {
     // Create a fresh parser for this connection attempt.
     this._parser = new SseParser({
       maxLineLength: this._opts.maxLineLength ?? 1_048_576,
+      maxEventSize: this._opts.maxEventSize,
+      maxIdLength: this._opts.maxIdLength,
       onEvent: (parsed) => {
         this._onMessage({
           streamId:  sid,
@@ -476,7 +603,7 @@ export class NativeSSE {
           id:        parsed.id ?? '',
         });
       },
-      onRetry: (ms) => { this._serverRetryMs = ms; },
+      onRetry: (ms) => { this._serverRetryMs = this._acceptServerRetry(ms); },
       onParseError: (reason) => {
         this._onError({
           streamId:  sid,
@@ -516,6 +643,8 @@ export class NativeSSE {
       }
     };
 
+    const xhrMaxBuffer = this._opts.xhrMaxBufferBytes ?? 4_194_304;
+
     xhr.onprogress = () => {
       const chunk = xhr.responseText.slice(prevLength);
       prevLength = xhr.responseText.length;
@@ -523,6 +652,22 @@ export class NativeSSE {
         this._metrics.bytesReceived += chunk.length;
         this._resetStaleTimer();
         this._parser?.feed(chunk);
+      }
+
+      // `responseText` never shrinks, so a long-lived stream would grow it until
+      // the process runs out of memory. Reconnecting drops the buffer and
+      // resumes from Last-Event-ID.
+      if (prevLength >= xhrMaxBuffer && sid === this._streamId) {
+        if (this._opts.debug) {
+          console.log(
+            `[NativeSSE] XHR buffer reached ${prevLength} bytes — ` +
+              'reconnecting to release it (resumes from Last-Event-ID).',
+          );
+        }
+        xhr.abort();
+        this._xhr = null;
+        this._parser?.reset();
+        this._scheduleReconnect();
       }
     };
 
@@ -561,6 +706,8 @@ export class NativeSSE {
 
     this._parser = new SseParser({
       maxLineLength: this._opts.maxLineLength ?? 1_048_576,
+      maxEventSize: this._opts.maxEventSize,
+      maxIdLength: this._opts.maxIdLength,
       onEvent: (parsed) => {
         this._onMessage({
           streamId:  sid,
@@ -569,7 +716,7 @@ export class NativeSSE {
           id:        parsed.id ?? '',
         });
       },
-      onRetry: (ms) => { this._serverRetryMs = ms; },
+      onRetry: (ms) => { this._serverRetryMs = this._acceptServerRetry(ms); },
       onParseError: (reason) => {
         this._onError({
           streamId:  sid,
@@ -621,14 +768,19 @@ export class NativeSSE {
 
         this._onOpen({ streamId: sid, statusCode: response.status, headers: {} });
 
-        // If ReadableStream is unavailable, degrade to parsing the full text body.
+        // Without a readable body the only option would be `response.text()`,
+        // which never resolves for a stream that does not end — so report it
+        // rather than hanging in silence.
         // eslint-disable-next-line @typescript-eslint/no-explicit-any
         if (!response.body || typeof (response.body as any).getReader !== 'function') {
-          const text = await response.text();
-          if (sid !== this._streamId) return;
-          this._parser?.feed(text);
-          this._parser?.flush();
-          this._onClose({ streamId: sid });
+          this._onError({
+            streamId:  sid,
+            message:
+              'Fetch transport returned a non-streaming body; ' +
+              'use transport: "xhr" on this runtime.',
+            errorCode: 'NETWORK_ERROR',
+            isFatal:   true,
+          });
           return;
         }
 
@@ -678,14 +830,15 @@ export class NativeSSE {
   // ── Internal connect / reconnect ────────────────────────────────────────────
 
   private _doConnect(): void {
+    const previousStreamId = this._streamId;
     this._streamId = nextStreamId();
     this._transition(SSE_STATE.CONNECTING);
 
     if (!this._useFallback) {
-      // Re-attach native listeners so they filter on the new streamId.
-      for (const sub of this._subscriptions) sub.remove();
-      this._subscriptions = [];
+      // Move this stream's routing entry to the new id, adding before removing
+      // so the shared listeners are never torn down mid-reconnect.
       this._attachNativeListeners();
+      if (previousStreamId) unregisterStream(previousStreamId);
     }
 
     const start = (): void => {
@@ -719,6 +872,11 @@ export class NativeSSE {
   private _connectNative(): void {
     if (this._sm.state !== SSE_STATE.CONNECTING) return;
 
+    // Only reachable when `_useFallback` is false, which implies the native
+    // module resolved. The local binding narrows the nullable spec type.
+    const native = NativeNativeSse;
+    if (native == null) return;
+
     const sid = this._streamId;
 
     const headers: Record<string, string> = {
@@ -731,6 +889,8 @@ export class NativeSSE {
     // Create a fresh parser for this native connection attempt.
     this._parser = new SseParser({
       maxLineLength: this._opts.maxLineLength ?? 1_048_576,
+      maxEventSize: this._opts.maxEventSize,
+      maxIdLength: this._opts.maxIdLength,
       onEvent: (parsed) => {
         this._onMessage({
           streamId:  sid,
@@ -739,7 +899,7 @@ export class NativeSSE {
           id:        parsed.id ?? '',
         });
       },
-      onRetry: (ms) => { this._serverRetryMs = ms; },
+      onRetry: (ms) => { this._serverRetryMs = this._acceptServerRetry(ms); },
       onParseError: (reason) => {
         this._onError({
           streamId:  sid,
@@ -750,14 +910,33 @@ export class NativeSSE {
       },
     });
 
-    NativeNativeSse.connect(this._streamId, this._url, {
+    native.connect(this._streamId, this._url, {
       method:        this._opts.method        ?? 'GET',
       headers,
       body:          this._opts.body          ?? '',
       lastEventId:   this._lastEventId,
       timeout:       this._opts.timeout       ?? 0,
-      maxLineLength: this._opts.maxLineLength ?? 1_048_576,
     });
+  }
+
+  /**
+   * Clamp a server-provided `retry:` value into something safe to schedule.
+   * Returns null when the value must be ignored entirely.
+   */
+  private _acceptServerRetry(ms: number): number | null {
+    if (this._opts.respectServerRetry === false) return null;
+    if (!Number.isFinite(ms) || ms < 0) return null;
+
+    const floor = this._opts.minReconnectDelayMs ?? 500;
+    const ceil  = this._opts.maxReconnectDelayMs ?? 300_000;
+    const clamped = Math.min(Math.max(ms, floor), Math.max(floor, ceil));
+
+    if (clamped !== ms && this._opts.debug) {
+      console.log(
+        `[NativeSSE] Server asked for retry: ${ms}ms — clamped to ${clamped}ms.`,
+      );
+    }
+    return clamped;
   }
 
   private _scheduleReconnect(): void {
@@ -789,7 +968,9 @@ export class NativeSSE {
     }
 
     const delay = this._serverRetryMs !== null
-      ? this._serverRetryMs
+      // ±20% jitter: a server-sent value is identical across the whole fleet,
+      // so scheduling it verbatim synchronises every client's reconnect.
+      ? Math.floor(this._serverRetryMs * (0.8 + Math.random() * 0.4))
       : computeDelay(this._policy, this._reconnectAttempts);
     this._opts.onReconnectAttempt?.(this._reconnectAttempts, delay);
 
@@ -929,8 +1110,7 @@ export class NativeSSE {
     }
     this._parser?.reset();
 
-    for (const sub of this._subscriptions) sub.remove();
-    this._subscriptions = [];
+    if (this._streamId) unregisterStream(this._streamId);
 
     // AppState and network subscriptions survive pause/resume; only close() removes them.
     if (removeAll) {

@@ -321,14 +321,24 @@ describe('Fetch transport – cancellation', () => {
 
 // ─── Degraded env (no ReadableStream) ────────────────────────────────────────
 
-describe('Fetch transport – degraded (no ReadableStream)', () => {
-  it('falls back to response.text() when body has no getReader', async () => {
+describe('Fetch transport – non-streaming body', () => {
+  it('reports a fatal error instead of reading the body to completion', async () => {
+    // The old behaviour degraded to `await response.text()`, which for an SSE
+    // stream that never ends simply never resolves: no events, no error, no
+    // sign that anything is wrong. Failing loudly is the only useful answer.
     mockFetch.mockReturnValue(makeTextResponse(200, 'data: fallback\n\n'));
     const onmessage = jest.fn();
+    const onerror = jest.fn();
     const sse = new NativeSSE(URL, { transport: 'fetch' });
     sse.onmessage = onmessage;
+    sse.onerror = onerror;
     for (let i = 0; i < 10; i++) await Promise.resolve();
-    expect(onmessage).toHaveBeenCalledWith(expect.objectContaining({ data: 'fallback' }));
+
+    expect(onmessage).not.toHaveBeenCalled();
+    expect(onerror).toHaveBeenCalledWith(
+      expect.objectContaining({ code: 'NETWORK_ERROR' }),
+    );
+    expect(onerror.mock.calls[0]![0].message).toContain('non-streaming body');
     sse.close();
   });
 });

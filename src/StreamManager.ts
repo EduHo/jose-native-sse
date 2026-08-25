@@ -24,15 +24,9 @@
  * ```
  */
 
-import { NativeModules } from 'react-native';
 import { NativeSSE } from './EventSource';
+import NativeNativeSse from './NativeNativeSse';
 import type { SseConnectOptions, StreamMetrics } from './types';
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const NativeNativeSse = (global as any).__turboModuleProxy != null
-  // eslint-disable-next-line @typescript-eslint/no-var-requires
-  ? require('./NativeNativeSse').default
-  : NativeModules.NativeNativeSse;
 
 export class SseStreamManager {
   private readonly _streams = new Map<string, NativeSSE>();
@@ -92,11 +86,28 @@ export class SseStreamManager {
     for (const s of this._streams.values()) s.resume();
   }
 
-  /** Permanently close all streams and clear the registry. */
+  /**
+   * Permanently close all streams in this registry and clear it.
+   *
+   * Only this manager's streams: the native `disconnectAll()` is process-wide
+   * and would also tear down streams created directly with `new NativeSSE()`
+   * or held by another manager. Each `close()` already disconnects its own
+   * stream natively.
+   */
   closeAll(): void {
     for (const s of this._streams.values()) s.close();
     this._streams.clear();
-    // Belt-and-suspenders: also tell native to clean up.
+  }
+
+  /**
+   * Disconnect every SSE stream in the process, including ones this manager did
+   * not create.
+   *
+   * A blunt instrument for teardown paths — logout, app shutdown — where
+   * nothing should survive. Prefer `closeAll()` anywhere else.
+   */
+  disconnectAllStreams(): void {
+    this.closeAll();
     NativeNativeSse?.disconnectAll?.();
   }
 

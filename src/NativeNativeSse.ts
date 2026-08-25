@@ -21,10 +21,13 @@ export type ConnectOptions = {
   body: string;
   /** Last received event ID used to populate Last-Event-ID header. */
   lastEventId: string;
-  /** Timeout in milliseconds. 0 = no timeout. */
+  /**
+   * Connection-establishment timeout in milliseconds. 0 = platform default.
+   *
+   * This is not a read timeout: silence is normal on an SSE stream, so zombie
+   * detection lives in JS via the `staleTimeoutMs` option.
+   */
   timeout: number;
-  /** Maximum byte length of a single SSE line. Default: 1 048 576 (1 MB). */
-  maxLineLength: number;
 };
 
 export interface Spec extends TurboModule {

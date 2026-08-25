@@ -1,6 +1,5 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
 import {
-  SafeAreaView,
   ScrollView,
   StyleSheet,
   Text,
@@ -11,6 +10,9 @@ import {
   KeyboardAvoidingView,
   Platform,
 } from 'react-native';
+// react-native's own SafeAreaView is deprecated and iOS-only; this one is
+// maintained, works on both platforms, and is what Expo ships in its templates.
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import { NativeSSE, SseStreamManager, SSE_STATE } from 'jose-native-sse';
 
 const DEFAULT_URL = 'https://sse.dev/test';
@@ -210,134 +212,136 @@ export default function App() {
   const canClose   = !canConnect;
 
   return (
-    <SafeAreaView style={styles.safe}>
-      <StatusBar barStyle="light-content" />
-      <KeyboardAvoidingView
-        style={styles.flex}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
-        <View style={styles.header}>
-          <Text style={styles.title}>jose-native-sse</Text>
-          <Text style={styles.subtitle}>Native SSE · TurboModules · Expo</Text>
-        </View>
-
-        <View style={styles.urlRow}>
-          <TextInput
-            style={styles.urlInput}
-            value={url}
-            onChangeText={setUrl}
-            placeholder="https://…"
-            placeholderTextColor="#636366"
-            autoCapitalize="none"
-            autoCorrect={false}
-            keyboardType="url"
-            editable
-            contextMenuHidden={false}
-            selectTextOnFocus
-          />
-        </View>
-
-        <View style={styles.chipRow}>
-          {PRESETS.map((preset) => (
-            <TouchableOpacity
-              key={preset.path}
-              style={styles.chip}
-              onPress={() => {
-                setUrl(stressUrl(preset.path));
-                log(`preset: ${preset.label} — ${preset.hint}`);
-              }}
-              activeOpacity={0.7}
-            >
-              <Text style={styles.chipText}>{preset.label}</Text>
-            </TouchableOpacity>
-          ))}
-        </View>
-
-        <View style={styles.stateRow}>
-          <View style={[styles.dot, { backgroundColor: STATE_COLOR[state] ?? '#8E8E93' }]} />
-          <Text style={styles.stateText}>{state.toUpperCase()}</Text>
-        </View>
-
-        {metrics && (
-          <View style={styles.metricsCard}>
-            <MetricRow label="Events"     value={metrics.eventsReceived} />
-            <MetricRow label="Bytes"      value={`${(metrics.bytesReceived / 1024).toFixed(1)} KB`} />
-            <MetricRow label="Reconnects" value={metrics.reconnectCount} />
-            <MetricRow label="Stale"      value={metrics.staleCount} />
-            <MetricRow label="Last ID"    value={metrics.lastEventId || '—'} />
+    <SafeAreaProvider>
+      <SafeAreaView style={styles.safe} edges={['top', 'bottom']}>
+        <StatusBar barStyle="light-content" />
+        <KeyboardAvoidingView
+          style={styles.flex}
+          behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+        >
+          <View style={styles.header}>
+            <Text style={styles.title}>jose-native-sse</Text>
+            <Text style={styles.subtitle}>Native SSE · TurboModules · Expo</Text>
           </View>
-        )}
 
-        <View style={styles.controls}>
-          <Btn label="Connect" onPress={connect}       disabled={!canConnect} color="#34C759" />
-          <Btn label="Pause"   onPress={handlePause}   disabled={!canPause}   color="#5AC8FA" />
-          <Btn label="Resume"  onPress={handleResume}  disabled={!canResume}  color="#FF9500" />
-          <Btn label="Close"   onPress={handleClose}   disabled={!canClose}   color="#FF3B30" />
-        </View>
-
-        <Text style={styles.sectionTitle}>
-          RECONNECT DELAYS · floor {MIN_RECONNECT_MS}ms · ceiling {MAX_RECONNECT_MS}ms
-        </Text>
-        <View style={styles.panel}>
-          {delays.length === 0 ? (
-            <Text style={styles.panelHint}>
-              Pick “retry: 0” or “retry: 9…9” and connect. The server asks for a
-              delay that would spin; every value below is what was actually
-              scheduled.
-            </Text>
-          ) : (
-            <>
-              <View style={styles.delayRow}>
-                {delays.map((d, i) => (
-                  <Text
-                    key={i}
-                    style={[
-                      styles.delayPill,
-                      d < MIN_RECONNECT_MS * 0.8 && styles.delayPillBad,
-                    ]}
-                  >
-                    {d}ms
-                  </Text>
-                ))}
-              </View>
-              <Text style={styles.panelHint}>
-                min {Math.min(...delays)}ms · jitter is ±20%, so the floor shows
-                as ≥{Math.round(MIN_RECONNECT_MS * 0.8)}ms. Anything red would be
-                the unclamped bug.
-              </Text>
-            </>
-          )}
-        </View>
-
-        <Text style={styles.sectionTitle}>STREAM MANAGER</Text>
-        <View style={styles.panel}>
-          <Text style={styles.panelHint}>
-            {managerIds.length > 0
-              ? `Managed: ${managerIds.join(', ')} — plus the standalone stream above, which this manager does not own.`
-              : 'Start two managed streams, then compare the two teardowns against the standalone stream above.'}
-          </Text>
-          <View style={styles.controls}>
-            <Btn label="Start 2 streams" onPress={startManagedStreams} color="#34C759" />
-            <Btn label="closeAll()" onPress={managerCloseAll} disabled={managerIds.length === 0} color="#5AC8FA" />
-            <Btn label="disconnectAllStreams()" onPress={managerDisconnectAll} color="#FF3B30" />
+          <View style={styles.urlRow}>
+            <TextInput
+              style={styles.urlInput}
+              value={url}
+              onChangeText={setUrl}
+              placeholder="https://…"
+              placeholderTextColor="#636366"
+              autoCapitalize="none"
+              autoCorrect={false}
+              keyboardType="url"
+              editable
+              contextMenuHidden={false}
+              selectTextOnFocus
+            />
           </View>
-          <Text style={styles.panelHint}>
-            closeAll() leaves the standalone stream running. disconnectAllStreams()
-            cuts every stream in the process, including ones it never created —
-            which is why it is a separate method now.
-          </Text>
-        </View>
 
-        <Text style={styles.logTitle}>EVENT LOG</Text>
-        <ScrollView style={styles.log} contentContainerStyle={styles.logContent}>
-          {messages.map((m, i) => (
-            <View key={i} style={styles.logLineWrap}>
-              <Text selectable style={styles.logLine}>{m}</Text>
+          <View style={styles.chipRow}>
+            {PRESETS.map((preset) => (
+              <TouchableOpacity
+                key={preset.path}
+                style={styles.chip}
+                onPress={() => {
+                  setUrl(stressUrl(preset.path));
+                  log(`preset: ${preset.label} — ${preset.hint}`);
+                }}
+                activeOpacity={0.7}
+              >
+                <Text style={styles.chipText}>{preset.label}</Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+
+          <View style={styles.stateRow}>
+            <View style={[styles.dot, { backgroundColor: STATE_COLOR[state] ?? '#8E8E93' }]} />
+            <Text style={styles.stateText}>{state.toUpperCase()}</Text>
+          </View>
+
+          {metrics && (
+            <View style={styles.metricsCard}>
+              <MetricRow label="Events"     value={metrics.eventsReceived} />
+              <MetricRow label="Bytes"      value={`${(metrics.bytesReceived / 1024).toFixed(1)} KB`} />
+              <MetricRow label="Reconnects" value={metrics.reconnectCount} />
+              <MetricRow label="Stale"      value={metrics.staleCount} />
+              <MetricRow label="Last ID"    value={metrics.lastEventId || '—'} />
             </View>
-          ))}
-        </ScrollView>
-      </KeyboardAvoidingView>
-    </SafeAreaView>
+          )}
+
+          <View style={styles.controls}>
+            <Btn label="Connect" onPress={connect}       disabled={!canConnect} color="#34C759" />
+            <Btn label="Pause"   onPress={handlePause}   disabled={!canPause}   color="#5AC8FA" />
+            <Btn label="Resume"  onPress={handleResume}  disabled={!canResume}  color="#FF9500" />
+            <Btn label="Close"   onPress={handleClose}   disabled={!canClose}   color="#FF3B30" />
+          </View>
+
+          <Text style={styles.sectionTitle}>
+            RECONNECT DELAYS · floor {MIN_RECONNECT_MS}ms · ceiling {MAX_RECONNECT_MS}ms
+          </Text>
+          <View style={styles.panel}>
+            {delays.length === 0 ? (
+              <Text style={styles.panelHint}>
+                Pick “retry: 0” or “retry: 9…9” and connect. The server asks for a
+                delay that would spin; every value below is what was actually
+                scheduled.
+              </Text>
+            ) : (
+              <>
+                <View style={styles.delayRow}>
+                  {delays.map((d, i) => (
+                    <Text
+                      key={i}
+                      style={[
+                        styles.delayPill,
+                        d < MIN_RECONNECT_MS * 0.8 && styles.delayPillBad,
+                      ]}
+                    >
+                      {d}ms
+                    </Text>
+                  ))}
+                </View>
+                <Text style={styles.panelHint}>
+                  min {Math.min(...delays)}ms · jitter is ±20%, so the floor shows
+                  as ≥{Math.round(MIN_RECONNECT_MS * 0.8)}ms. Anything red would be
+                  the unclamped bug.
+                </Text>
+              </>
+            )}
+          </View>
+
+          <Text style={styles.sectionTitle}>STREAM MANAGER</Text>
+          <View style={styles.panel}>
+            <Text style={styles.panelHint}>
+              {managerIds.length > 0
+                ? `Managed: ${managerIds.join(', ')} — plus the standalone stream above, which this manager does not own.`
+                : 'Start two managed streams, then compare the two teardowns against the standalone stream above.'}
+            </Text>
+            <View style={styles.controls}>
+              <Btn label="Start 2 streams" onPress={startManagedStreams} color="#34C759" />
+              <Btn label="closeAll()" onPress={managerCloseAll} disabled={managerIds.length === 0} color="#5AC8FA" />
+              <Btn label="disconnectAllStreams()" onPress={managerDisconnectAll} color="#FF3B30" />
+            </View>
+            <Text style={styles.panelHint}>
+              closeAll() leaves the standalone stream running. disconnectAllStreams()
+              cuts every stream in the process, including ones it never created —
+              which is why it is a separate method now.
+            </Text>
+          </View>
+
+          <Text style={styles.logTitle}>EVENT LOG</Text>
+          <ScrollView style={styles.log} contentContainerStyle={styles.logContent}>
+            {messages.map((m, i) => (
+              <View key={i} style={styles.logLineWrap}>
+                <Text selectable style={styles.logLine}>{m}</Text>
+              </View>
+            ))}
+          </ScrollView>
+        </KeyboardAvoidingView>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 }
 

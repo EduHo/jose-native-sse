@@ -13,7 +13,8 @@
     "expo-status-bar": "~57.0.1",
     "jose-native-sse": "file:..",
     "react": "19.2.3",
-    "react-native": "0.86.2"
+    "react-native": "0.86.2",
+    "react-native-safe-area-context": "~5.7.0"
   },
   "private": true
 }

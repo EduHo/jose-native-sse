@@ -33,12 +33,24 @@ const routes = {
     res.end('ok');
   },
 
-  /** Well-behaved stream. Baseline for the e2e suite. */
+  /**
+   * Well-behaved stream, shaped to satisfy __tests__/e2e.test.ts.
+   *
+   * That suite probes 127.0.0.1:3000 and skips when nothing answers, so once
+   * this server is running it runs for real — which means the payload has to
+   * match what it asserts: an event named `random`, JSON carrying a numeric
+   * id, a value in [0, 100] and an ISO timestamp, and `retry: 5000`.
+   */
   '/events': async (_req, res) => {
     res.writeHead(200, SSE_HEADERS);
-    res.write(Buffer.from('retry: 2000\n\n', 'utf8'));
+    res.write(Buffer.from('retry: 5000\n\n', 'utf8'));
     for (let i = 1; !res.writableEnded; i++) {
-      res.write(Buffer.from(`id: ${i}\nevent: tick\ndata: {"n":${i}}\n\n`, 'utf8'));
+      const payload = JSON.stringify({
+        id: i,
+        value: Math.round(Math.random() * 100),
+        timestamp: new Date().toISOString(),
+      });
+      res.write(Buffer.from(`id: ${i}\nevent: random\ndata: ${payload}\n\n`, 'utf8'));
       await sleep(40);
       if (i >= 200) break;
     }

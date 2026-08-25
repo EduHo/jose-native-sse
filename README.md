@@ -493,6 +493,27 @@ type ExponentialReconnectPolicy = {
 };
 ```
 
+#### Reconnect helpers
+
+Both are exported, mostly so a custom policy can be tested or previewed without
+opening a connection:
+
+```ts
+import { computeDelay, resolvePolicy } from 'jose-native-sse';
+
+const policy = resolvePolicy({ reconnectInterval: 3000 });
+// → { type: 'fixed', intervalMs: 3000 }
+//   Normalises the deprecated reconnectInterval into a policy object.
+//   An explicit reconnectPolicy always wins.
+
+computeDelay({ type: 'exponential', initialMs: 1000, maxMs: 30_000 }, 3);
+// → ~4000ms, jittered. attempt is 1-based.
+```
+
+`computeDelay` reports what the **policy** would schedule. It is not what the
+stream necessarily uses: a server-supplied `retry:` overrides the policy, and is
+clamped and jittered separately. See below.
+
 #### Server-controlled reconnect delay
 
 A server can set the reconnect delay by sending a `retry:` field, and per the

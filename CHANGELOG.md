@@ -126,6 +126,16 @@ were demonstrated failing against real sockets before the fix — see
   the New Architecture Gradle plugin applied unconditionally (a `newArchEnabled`
   check would silently skip Codegen, since RN 0.82 no longer sets that property).
 
+### Changed
+
+- **The reconnect debug log names where the delay came from.** It printed the
+  configured policy even when the delay came from the server's `retry:` and the
+  policy was never consulted, so `Reconnecting in 490ms … policy=exponential`
+  appeared next to an exponential policy configured with `initialMs: 1000` —
+  reading as if backoff were broken. It now says
+  `via server retry (500ms + jitter)` or `via exponential policy`. Debug output
+  only; behaviour is unchanged.
+
 ### Changed — breaking
 
 - **`timeout` is a connection-establishment timeout, not a read timeout.** It

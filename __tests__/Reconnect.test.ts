@@ -211,7 +211,7 @@ describe('NativeSSE – maxReconnectAttempts', () => {
     expect(sse.state).toBe(SSE_STATE.FAILED);
   });
 
-  it('server retry: field updates reconnect interval', () => {
+  it('server retry: field overrides the configured interval', () => {
     const sse = new NativeSSE(URL, {
       reconnectPolicy: { type: 'fixed', intervalMs: 3_000 },
     });
@@ -222,12 +222,91 @@ describe('NativeSSE – maxReconnectAttempts', () => {
     });
     emitError();
 
-    // Should NOT reconnect at 3 000 ms (original interval).
-    jest.advanceTimersByTime(7_999);
+    // Must not use the configured 3 000 ms any more.
+    jest.advanceTimersByTime(3_500);
     expect(mockConnect).toHaveBeenCalledTimes(1);
 
-    // Should reconnect at 8 000 ms.
-    jest.advanceTimersByTime(1);
+    // The server value carries ±20% jitter, so it lands inside [6400, 9600].
+    // Jitter is applied because a server-sent number is identical for every
+    // client, and scheduling it verbatim synchronises the whole fleet.
+    jest.advanceTimersByTime(9_600 - 3_500);
+    expect(mockConnect).toHaveBeenCalledTimes(2);
+    sse.close();
+  });
+
+  it('clamps a server retry of 0 to the minimum delay', () => {
+    const sse = new NativeSSE(URL, {
+      reconnectPolicy: { type: 'fixed', intervalMs: 3_000 },
+      minReconnectDelayMs: 500,
+    });
+    emitOpen();
+    __emit('sse_chunk', {
+      streamId: lastStreamId(), chunk: 'retry: 0\n\n', byteLength: 10,
+    });
+    emitError();
+
+    // Without a floor this would be setTimeout(..., 0) — a reconnect loop with
+    // no backoff at all.
+    jest.advanceTimersByTime(399);
+    expect(mockConnect).toHaveBeenCalledTimes(1);
+    jest.advanceTimersByTime(601);
+    expect(mockConnect).toHaveBeenCalledTimes(2);
+    sse.close();
+  });
+
+  it('does not hot-loop on a retry value that overflows to Infinity', () => {
+    const sse = new NativeSSE(URL, {
+      reconnectPolicy: { type: 'fixed', intervalMs: 3_000 },
+    });
+    emitOpen();
+    const before = mockConnect.mock.calls.length;
+
+    // 400 digits parses to Infinity, and setTimeout(fn, Infinity) collapses to
+    // roughly 1ms — so the old behaviour reconnected almost instantly, forever.
+    __emit('sse_chunk', {
+      streamId: lastStreamId(),
+      chunk: `retry: ${'9'.repeat(400)}\n\n`,
+      byteLength: 410,
+    });
+    emitError();
+
+    jest.advanceTimersByTime(400);
+    expect(mockConnect.mock.calls.length).toBe(before);
+    sse.close();
+  });
+
+  it('clamps a large but finite server retry to maxReconnectDelayMs', () => {
+    const sse = new NativeSSE(URL, {
+      reconnectPolicy: { type: 'fixed', intervalMs: 3_000 },
+      maxReconnectDelayMs: 10_000,
+    });
+    emitOpen();
+    // 11 days: without a ceiling the stream is effectively dead for good.
+    __emit('sse_chunk', {
+      streamId: lastStreamId(), chunk: 'retry: 999999999\n\n', byteLength: 18,
+    });
+    emitError();
+
+    // Clamped to 10 000 ms, then jittered into [8000, 12000].
+    jest.advanceTimersByTime(7_999);
+    expect(mockConnect).toHaveBeenCalledTimes(1);
+    jest.advanceTimersByTime(12_000 - 7_999);
+    expect(mockConnect).toHaveBeenCalledTimes(2);
+    sse.close();
+  });
+
+  it('ignores the server retry when respectServerRetry is false', () => {
+    const sse = new NativeSSE(URL, {
+      reconnectPolicy: { type: 'fixed', intervalMs: 3_000 },
+      respectServerRetry: false,
+    });
+    emitOpen();
+    __emit('sse_chunk', {
+      streamId: lastStreamId(), chunk: 'retry: 60000\n\n', byteLength: 14,
+    });
+    emitError();
+
+    jest.advanceTimersByTime(3_000);
     expect(mockConnect).toHaveBeenCalledTimes(2);
     sse.close();
   });

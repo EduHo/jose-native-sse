@@ -1,4 +1,12 @@
 {
   "extends": "./tsconfig",
-  "exclude": ["example", "__tests__", "jest.config.js", "babel.config.js", "__mocks__"]
+  "exclude": [
+    "node_modules",
+    "example-expo",
+    "plugin",
+    "__tests__",
+    "__mocks__",
+    "jest.config.js",
+    "babel.config.js"
+  ]
 }

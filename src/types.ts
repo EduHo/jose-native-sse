@@ -182,11 +182,33 @@ export interface SseConnectOptions {
   /** Request timeout in ms. 0 = no timeout (default). */
   timeout?: number;
   /**
-   * Maximum byte length of a single SSE line in the native parser.
-   * Lines exceeding this trigger a PARSE_ERROR and the line is dropped.
+   * Maximum length of a single SSE line.
+   *
+   * A longer line triggers a PARSE_ERROR and is dropped, along with everything
+   * up to the next line terminator — so the tail of an over-long line can never
+   * be reinterpreted as a fresh set of SSE fields.
+   *
+   * Enforced in JS: the native layer is a pure transport and does no parsing.
    * Default: 1 048 576 (1 MB).
    */
   maxLineLength?: number;
+  /**
+   * Maximum total size of one event's accumulated `data:` payload.
+   *
+   * `maxLineLength` only bounds a single line, so without this a server that
+   * never sends a blank line can grow the buffer without limit. Reaching the cap
+   * discards the event in progress and reports a PARSE_ERROR.
+   * Default: 4 194 304 (4 MB).
+   */
+  maxEventSize?: number;
+  /**
+   * Maximum length of an `id:` value; longer ids are ignored.
+   *
+   * The id travels back to the server in the `Last-Event-ID` request header on
+   * every reconnect, so an unbounded one lets a server provoke requests that
+   * proxies reject. Default: 1024.
+   */
+  maxIdLength?: number;
 
   // ── Stale detection ───────────────────────────────────────────────────────
   /**
@@ -237,6 +259,37 @@ export interface SseConnectOptions {
    * Default: 'sse:last-event-id'.
    */
   storageKey?: string;
+  /**
+   * Honour the server's `retry:` field as the reconnect delay.
+   *
+   * The value is always clamped to
+   * [`minReconnectDelayMs`, `maxReconnectDelayMs`] and jittered, because it is
+   * server-controlled: `retry: 0` would otherwise mean a reconnect loop with no
+   * backoff at all, and a value large enough to overflow to Infinity collapses
+   * to ~1ms in `setTimeout` — the same loop by the opposite route.
+   *
+   * Default: true.
+   */
+  respectServerRetry?: boolean;
+  /**
+   * Floor for any reconnect delay, including one the server asked for.
+   * Default: 500.
+   */
+  minReconnectDelayMs?: number;
+  /**
+   * Ceiling for any reconnect delay, including one the server asked for.
+   * Default: 300 000 (5 minutes).
+   */
+  maxReconnectDelayMs?: number;
+  /**
+   * Byte ceiling for the XHR fallback transport before it force-reconnects.
+   *
+   * `XMLHttpRequest.responseText` keeps the entire response for the life of the
+   * connection, so an SSE stream grows it without bound. Reconnecting resumes
+   * from `Last-Event-ID`, so no events are lost. Ignored by the native and
+   * fetch transports. Default: 4 194 304 (4 MB).
+   */
+  xhrMaxBufferBytes?: number;
   /**
    * Storage adapter for last-event-id persistence.
    * Default: `InMemoryStorageAdapter`.

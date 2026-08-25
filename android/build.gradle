@@ -1,38 +1,36 @@
 buildscript {
+  ext.getExtOrDefault = { name ->
+    return rootProject.ext.has(name) ? rootProject.ext.get(name) : project.properties["NativeSse_" + name]
+  }
+
   repositories {
     google()
     mavenCentral()
   }
 
   dependencies {
-    classpath "com.android.tools.build:gradle:7.2.1"
-    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:1.8.0"
+    classpath "com.android.tools.build:gradle:8.12.0"
+    classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:${getExtOrDefault('kotlinVersion')}"
   }
 }
 
 apply plugin: "com.android.library"
 apply plugin: "kotlin-android"
-
-def getExtOrDefault(name) {
-  return rootProject.ext.has(name) ? rootProject.ext.get(name) : project.properties["NativeSse_" + name]
-}
+// React Native's Gradle plugin drives codegen for the TurboModule spec. Since
+// RN 0.82 the New Architecture is the only architecture, so this is applied
+// unconditionally — there is no legacy bridge path left to branch on.
+apply plugin: "com.facebook.react"
 
 def getExtOrIntegerDefault(name) {
   return rootProject.ext.has(name) ? rootProject.ext.get(name) : (project.properties["NativeSse_" + name]).toInteger()
 }
 
 android {
-  compileSdkVersion getExtOrIntegerDefault("compileSdkVersion")
+  compileSdk getExtOrIntegerDefault("compileSdkVersion")
   namespace "com.nativesse"
 
   defaultConfig {
-    minSdkVersion getExtOrIntegerDefault("minSdkVersion")
-    targetSdkVersion getExtOrIntegerDefault("targetSdkVersion")
-    buildConfigField "boolean", "IS_NEW_ARCHITECTURE_ENABLED", isNewArchitectureEnabled().toString()
-  }
-
-  buildFeatures {
-    buildConfig true
+    minSdk getExtOrIntegerDefault("minSdkVersion")
   }
 
   buildTypes {
@@ -41,31 +39,26 @@ android {
     }
   }
 
-  lintOptions {
+  lint {
     disable "GradleCompatible"
+  }
+
+  testOptions {
+    unitTests.all {
+      testLogging { showStandardStreams = true }
+    }
   }
 
   compileOptions {
     sourceCompatibility JavaVersion.VERSION_17
     targetCompatibility JavaVersion.VERSION_17
   }
+}
 
-  kotlinOptions {
-    jvmTarget = "17"
-  }
-
-  sourceSets {
-    main {
-      if (isNewArchitectureEnabled()) {
-        java.srcDirs += [
-          "src/newarch",
-          // Codegen output – generated at build time.
-          "${project.buildDir}/generated/source/codegen/jni",
-        ]
-      } else {
-        java.srcDirs += ["src/oldarch"]
-      }
-    }
+// `kotlinOptions` is deprecated since Kotlin 2.0; this is the supported form.
+kotlin {
+  compilerOptions {
+    jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
   }
 }
 
@@ -75,17 +68,16 @@ repositories {
 }
 
 dependencies {
-  implementation "com.facebook.react:react-native:+"
-  implementation "org.jetbrains.kotlin:kotlin-stdlib:1.8.0"
+  // Resolved to the app's React Native version by the RN Gradle plugin.
+  implementation "com.facebook.react:react-android"
+  implementation "org.jetbrains.kotlin:kotlin-stdlib:${getExtOrDefault('kotlinVersion')}"
 
-  // OkHttp – same version bundled by React Native to avoid conflicts.
-  implementation "com.squareup.okhttp3:okhttp:4.11.0"
-}
+  // OkHttp – Gradle resolves to the highest version on the classpath, so this
+  // aligns with whatever React Native / Expo bring in.
+  implementation "com.squareup.okhttp3:okhttp:4.12.0"
 
-def isNewArchitectureEnabled() {
-  return rootProject.hasProperty("newArchEnabled") && rootProject.getProperty("newArchEnabled") == "true"
-}
-
-if (isNewArchitectureEnabled()) {
-  apply plugin: "com.facebook.react"
+  // JVM stress/regression tests for the transport layer (see stress/README.md).
+  testImplementation "junit:junit:4.13.2"
+  testImplementation "com.squareup.okhttp3:mockwebserver:4.12.0"
+  testImplementation "org.jetbrains.kotlin:kotlin-test-junit:${getExtOrDefault('kotlinVersion')}"
 }

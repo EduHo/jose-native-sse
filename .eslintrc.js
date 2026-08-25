@@ -109,5 +109,8 @@ module.exports = {
     'example-expo/',
     'node_modules/',
     'coverage/',
+    // Native build output: Gradle writes JS into its HTML test reports.
+    'android/build/',
+    'ios/build/',
   ],
 };

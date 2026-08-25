@@ -7,13 +7,18 @@ import type { SseState } from './types';
  */
 const VALID: Partial<Record<SseState, readonly SseState[]>> = {
   [SSE_STATE.IDLE]:         [SSE_STATE.CONNECTING, SSE_STATE.CLOSED],
-  [SSE_STATE.CONNECTING]:   [SSE_STATE.OPEN, SSE_STATE.RECONNECTING, SSE_STATE.STALE, SSE_STATE.PAUSED, SSE_STATE.FAILED, SSE_STATE.CLOSED],
-  [SSE_STATE.OPEN]:         [SSE_STATE.RECONNECTING, SSE_STATE.STALE, SSE_STATE.PAUSED, SSE_STATE.FAILED, SSE_STATE.CLOSED],
-  [SSE_STATE.STALE]:        [SSE_STATE.RECONNECTING, SSE_STATE.CLOSED],
-  [SSE_STATE.RECONNECTING]: [SSE_STATE.CONNECTING, SSE_STATE.PAUSED, SSE_STATE.FAILED, SSE_STATE.CLOSED],
+  // → CONNECTING from any live state: reconnect() is a user-initiated restart
+  // that bypasses the backoff, so it can fire while connecting or open.
+  [SSE_STATE.CONNECTING]:   [SSE_STATE.CONNECTING, SSE_STATE.OPEN, SSE_STATE.RECONNECTING, SSE_STATE.STALE, SSE_STATE.PAUSED, SSE_STATE.FAILED, SSE_STATE.CLOSED],
+  [SSE_STATE.OPEN]:         [SSE_STATE.CONNECTING, SSE_STATE.RECONNECTING, SSE_STATE.STALE, SSE_STATE.PAUSED, SSE_STATE.FAILED, SSE_STATE.CLOSED],
+  [SSE_STATE.STALE]:        [SSE_STATE.CONNECTING, SSE_STATE.RECONNECTING, SSE_STATE.CLOSED],
+  // → RECONNECTING again: a second error can arrive while a retry is pending.
+  [SSE_STATE.RECONNECTING]: [SSE_STATE.CONNECTING, SSE_STATE.RECONNECTING, SSE_STATE.PAUSED, SSE_STATE.FAILED, SSE_STATE.CLOSED],
   [SSE_STATE.PAUSED]:       [SSE_STATE.CONNECTING, SSE_STATE.CLOSED],
+  // CLOSED is final. FAILED still accepts close(), which is resource release
+  // rather than a lifecycle step — nothing restarts from it.
   [SSE_STATE.CLOSED]:       [],
-  [SSE_STATE.FAILED]:       [],
+  [SSE_STATE.FAILED]:       [SSE_STATE.CLOSED],
 };
 
 export class StateMachine {
@@ -26,19 +31,31 @@ export class StateMachine {
   get state(): SseState { return this._state; }
 
   /**
-   * Transition to `next`. Throws in __DEV__ if the transition is invalid so
-   * bugs are caught in development and tests.
+   * Transition to `next`.
+   *
+   * Under test an invalid transition throws, so a bug fails the suite instead of
+   * printing a warning nobody reads. In development it warns; in production it
+   * is a no-op check and the transition is applied regardless — a wedged state
+   * machine is worse for a user than an unexpected one.
    */
   transition(next: SseState): void {
-    if (typeof __DEV__ !== 'undefined' && __DEV__) {
-      const allowed = VALID[this._state];
-      if (allowed && !allowed.includes(next)) {
-        console.warn(
-          `[StateMachine] Invalid transition: ${this._state} → ${next}`,
-        );
-      }
+    const allowed = VALID[this._state];
+    if (allowed && !allowed.includes(next)) {
+      const message = `[StateMachine] Invalid transition: ${this._state} → ${next}`;
+      if (isTestEnv()) throw new Error(message);
+      if (typeof __DEV__ !== 'undefined' && __DEV__) console.warn(message);
     }
     this._state = next;
+  }
+}
+
+function isTestEnv(): boolean {
+  try {
+    return (
+      typeof process !== 'undefined' && process.env?.NODE_ENV === 'test'
+    );
+  } catch {
+    return false;
   }
 }
 

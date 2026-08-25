@@ -164,9 +164,11 @@ describe('NativeSSE – connect arguments', () => {
     sse.close();
   });
 
-  it('passes maxLineLength option', () => {
+  it('does not send maxLineLength to native', () => {
     const sse = new NativeSSE(URL, { maxLineLength: 512 });
-    expect(mockConnect.mock.calls[0]![2].maxLineLength).toBe(512);
+    // The native layer is a pure transport and never parsed SSE, so it had no
+    // use for this — it is enforced by SseParser in JS.
+    expect(mockConnect.mock.calls[0]![2].maxLineLength).toBeUndefined();
     sse.close();
   });
 

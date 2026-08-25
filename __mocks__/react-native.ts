@@ -45,6 +45,24 @@ export const NativeModules = {
   },
 };
 
+// ─── TurboModuleRegistry ──────────────────────────────────────────────────────
+
+// `src/NativeNativeSse.ts` resolves the native module through this registry, so
+// the mock mirrors the real fallback-to-NativeModules behaviour.
+export const TurboModuleRegistry = {
+  get: <T,>(name: string): T | null =>
+    ((NativeModules as Record<string, unknown>)[name] as T | undefined) ?? null,
+  getEnforcing: <T,>(name: string): T => {
+    const module = (NativeModules as Record<string, unknown>)[name];
+    if (module == null) {
+      throw new Error(
+        `TurboModuleRegistry.getEnforcing(...): '${name}' could not be found.`,
+      );
+    }
+    return module as T;
+  },
+};
+
 // ─── Platform ────────────────────────────────────────────────────────────────
 
 export const Platform = {

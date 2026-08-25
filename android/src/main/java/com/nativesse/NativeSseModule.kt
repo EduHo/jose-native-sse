@@ -1,9 +1,8 @@
 package com.nativesse
 
+import com.facebook.fbreact.specs.NativeNativeSseSpec
 import com.facebook.react.bridge.Arguments
 import com.facebook.react.bridge.ReactApplicationContext
-import com.facebook.react.bridge.ReactContextBaseJavaModule
-import com.facebook.react.bridge.ReactMethod
 import com.facebook.react.bridge.ReadableMap
 import com.facebook.react.bridge.WritableMap
 import com.facebook.react.module.annotations.ReactModule
@@ -21,20 +20,17 @@ import java.util.concurrent.ConcurrentHashMap
  */
 @ReactModule(name = NativeSseModule.NAME)
 class NativeSseModule(private val reactContext: ReactApplicationContext) :
-    ReactContextBaseJavaModule(reactContext) {
+    NativeNativeSseSpec(reactContext) {
 
     companion object {
         const val NAME = "NativeNativeSse"
     }
 
-    override fun getName(): String = NAME
-
     private val connections = ConcurrentHashMap<String, SseConnection>()
 
     // ─── React Methods ──────────────────────────────────────────────────────────
 
-    @ReactMethod
-    fun connect(streamId: String, url: String, options: ReadableMap) {
+    override fun connect(streamId: String, url: String, options: ReadableMap) {
         val method    = options.getString("method") ?: "GET"
         val body      = options.getString("body")   ?: ""
         val timeoutMs = if (options.hasKey("timeout")) options.getInt("timeout").toLong() else 0L
@@ -96,20 +92,19 @@ class NativeSseModule(private val reactContext: ReactApplicationContext) :
         connection.connect()
     }
 
-    @ReactMethod
-    fun disconnect(streamId: String) {
+    override fun disconnect(streamId: String) {
         connections.remove(streamId)?.disconnect()
     }
 
-    @ReactMethod
-    fun disconnectAll() {
+    override fun disconnectAll() {
         connections.values.forEach { it.disconnect() }
         connections.clear()
     }
 
     // No-ops required by TurboModule spec / RCTEventEmitter subscription tracking.
-    @ReactMethod fun addListener(@Suppress("UNUSED_PARAMETER") eventName: String) {}
-    @ReactMethod fun removeListeners(@Suppress("UNUSED_PARAMETER") count: Int)    {}
+    // Note: codegen maps the spec's `number` to `Double`, not `Int`.
+    override fun addListener(@Suppress("UNUSED_PARAMETER") eventName: String) {}
+    override fun removeListeners(@Suppress("UNUSED_PARAMETER") count: Double) {}
 
     // ─── Lifecycle ──────────────────────────────────────────────────────────────
 

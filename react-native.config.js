@@ -4,7 +4,9 @@ module.exports = {
       ios: {
         podspecPath: './jose-native-sse.podspec',
       },
-      android: null,
+      android: {
+        sourceDir: './android',
+      },
     },
   },
 };

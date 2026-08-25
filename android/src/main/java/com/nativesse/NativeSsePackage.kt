@@ -1,30 +1,45 @@
 package com.nativesse
 
-import com.facebook.react.ReactPackage
+import com.facebook.react.BaseReactPackage
 import com.facebook.react.bridge.NativeModule
 import com.facebook.react.bridge.ReactApplicationContext
+import com.facebook.react.module.model.ReactModuleInfo
+import com.facebook.react.module.model.ReactModuleInfoProvider
 import com.facebook.react.uimanager.ViewManager
 
 /**
  * Package for jose-native-sse.
  *
- * Register in your MainApplication:
+ * The module is discovered automatically through autolinking and Codegen, so
+ * apps do not need to register this package in `MainApplication`.
  *
- * ```kotlin
- * // MainApplication.kt
- * override fun getPackages(): List<ReactPackage> =
- *   PackageList(this).packages + listOf(NativeSsePackage())
- * ```
- *
- * For New Architecture (TurboModules), the module is auto-discovered via
- * codegen and this package is used only for the legacy bridge path.
+ * Extends [BaseReactPackage] — the TurboModule-aware base class. The older
+ * `ReactPackage.createNativeModules` entry point is deprecated because it
+ * cannot express lazy module loading.
  */
-class NativeSsePackage : ReactPackage {
-  override fun createNativeModules(
+class NativeSsePackage : BaseReactPackage() {
+  override fun getModule(
+    name: String,
     reactContext: ReactApplicationContext,
-  ): List<NativeModule> = listOf(NativeSseModule(reactContext))
+  ): NativeModule? =
+    if (name == NativeSseModule.NAME) NativeSseModule(reactContext) else null
+
+  override fun getReactModuleInfoProvider(): ReactModuleInfoProvider =
+    ReactModuleInfoProvider {
+      mapOf(
+        NativeSseModule.NAME to
+          ReactModuleInfo(
+            NativeSseModule.NAME,
+            NativeSseModule::class.java.name,
+            /* canOverrideExistingModule = */ false,
+            /* needsEagerInit = */ false,
+            /* isCxxModule = */ false,
+            /* isTurboModule = */ true,
+          ),
+      )
+    }
 
   override fun createViewManagers(
     reactContext: ReactApplicationContext,
-  ): List<ViewManager<*, *>> = emptyList()
+  ): List<ViewManager<in Nothing, in Nothing>> = emptyList()
 }

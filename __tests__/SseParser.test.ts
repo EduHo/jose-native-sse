@@ -191,7 +191,23 @@ describe('SseParser – line endings', () => {
   it('handles CR (\\r)', () => {
     const { parser, events } = makeParser();
     parser.feed('data: cr\r\r');
+    // A CR at the very end of a chunk is ambiguous: it may be a bare CR
+    // terminator or the first half of a CRLF still in flight. The parser defers
+    // it, so a CR-terminated event lands on the next feed or on flush().
+    expect(events).toHaveLength(0);
+    parser.flush();
     expect(events[0]!.event.data).toBe('cr');
+  });
+
+  it('handles CR terminators mid-chunk without deferring', () => {
+    const { parser, events } = makeParser();
+    parser.feed('data: one\r\rdata: two\r\r');
+    // Only the final CR is ambiguous; everything before it dispatches at once.
+    expect(events).toHaveLength(1);
+    expect(events[0]!.event.data).toBe('one');
+    parser.flush();
+    expect(events).toHaveLength(2);
+    expect(events[1]!.event.data).toBe('two');
   });
 
   it('handles \\r\\n split across chunks', () => {

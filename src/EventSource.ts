@@ -967,18 +967,24 @@ export class NativeSSE {
       return;
     }
 
-    const delay = this._serverRetryMs !== null
+    const fromServer = this._serverRetryMs !== null;
+    const delay = fromServer
       // ±20% jitter: a server-sent value is identical across the whole fleet,
       // so scheduling it verbatim synchronises every client's reconnect.
-      ? Math.floor(this._serverRetryMs * (0.8 + Math.random() * 0.4))
+      ? Math.floor((this._serverRetryMs as number) * (0.8 + Math.random() * 0.4))
       : computeDelay(this._policy, this._reconnectAttempts);
     this._opts.onReconnectAttempt?.(this._reconnectAttempts, delay);
 
     if (this._opts.debug) {
+      // Name where the delay came from. Reporting the configured policy while
+      // actually using the server's `retry:` makes the policy look broken.
+      const source = fromServer
+        ? `server retry (${this._serverRetryMs}ms + jitter)`
+        : `${this._policy.type} policy`;
       console.log(
         `[NativeSSE] Reconnecting in ${delay}ms (attempt ${this._reconnectAttempts}` +
           (this._maxAttempts !== -1 ? `/${this._maxAttempts}` : '') +
-          `) policy=${this._policy.type}`,
+          `) via ${source}`,
       );
     }
 

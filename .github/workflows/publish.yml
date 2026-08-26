@@ -59,16 +59,29 @@ jobs:
       # that a pasted failure always carries them. Three earlier failures each
       # reported something other than their cause.
       - name: Publish
+        id: publish
         run: |
           echo "── preconditions ─────────────────────────────────────────"
           echo "npm              $(npm -v)   (OIDC needs >= 11.5.1)"
           echo "registry         $(npm config get registry)"
           echo "OIDC request URL ${ACTIONS_ID_TOKEN_REQUEST_URL:+present}${ACTIONS_ID_TOKEN_REQUEST_URL:-MISSING — is id-token: write set?}"
           echo "repository       ${GITHUB_REPOSITORY}"
-          echo "workflow file    ${GITHUB_WORKFLOW_REF##*/.github/workflows/}"
+          echo "workflow file    ${GITHUB_WORKFLOW_REF#*/.github/workflows/}"
+          echo "id-token pair    URL=${ACTIONS_ID_TOKEN_REQUEST_URL:+set} TOKEN=${ACTIONS_ID_TOKEN_REQUEST_TOKEN:+set}"
           echo "ref              ${GITHUB_REF}"
           for f in "$HOME/.npmrc" "$GITHUB_WORKSPACE/.npmrc" .npmrc; do
             [ -f "$f" ] && { echo "npmrc $f:"; sed 's/=.*/=<redacted>/' "$f"; }
           done
           echo "──────────────────────────────────────────────────────────"
-          npm publish --provenance --access public
+          npm publish --provenance --access public --loglevel verbose
+
+      # npm's own trace, which says whether an OIDC exchange was attempted and
+      # what the registry answered. The runner throws this away otherwise.
+      - name: npm debug log
+        if: failure() && steps.publish.outcome == 'failure'
+        run: |
+          for f in "$HOME/.npm/_logs/"*-debug-0.log; do
+            [ -f "$f" ] || continue
+            echo "── $f ──"
+            grep -iE 'oidc|trusted|provenance|401|403|404|audience|token' "$f" | tail -40
+          done

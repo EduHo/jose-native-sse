@@ -27,21 +27,45 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      id-token: write   # required for npm provenance
+      id-token: write   # the OIDC credential npm authenticates with
 
     steps:
       - uses: actions/checkout@v4
 
+      # No `registry-url` on purpose. It makes setup-node write an .npmrc
+      # containing `//registry.npmjs.org/:_authToken=${NODE_AUTH_TOKEN}`, and
+      # with no such variable that resolves to an empty token — npm then
+      # considers itself unauthenticated and fails with ENEEDAUTH before OIDC is
+      # ever attempted. The registry comes from publishConfig in package.json.
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          registry-url: https://registry.npmjs.org
           cache: npm
+
+      # Node 22 bundles npm 10; OIDC trusted publishing landed in npm 11.5.1.
+      - name: Upgrade npm for trusted publishing
+        run: npm install -g npm@latest
+
+      # Everything OIDC needs, printed before the attempt. A failure here should
+      # say which precondition was missing rather than just "need auth".
+      - name: Check publishing preconditions
+        run: |
+          echo "npm            $(npm -v)   (OIDC needs >= 11.5.1)"
+          echo "registry       $(npm config get registry)"
+          echo "OIDC token URL ${ACTIONS_ID_TOKEN_REQUEST_URL:+present}${ACTIONS_ID_TOKEN_REQUEST_URL:-MISSING (is id-token: write set?)}"
+          echo "userconfig     $(npm config get userconfig)"
+          echo "--- .npmrc files npm will read ---"
+          for f in "$HOME/.npmrc" "$GITHUB_WORKSPACE/.npmrc" .npmrc; do
+            [ -f "$f" ] && { echo "$f:"; sed 's/=.*/=<redacted>/' "$f"; }
+          done
+          echo "(none listed above means no .npmrc, which is what OIDC wants)"
 
       - run: npm install
       - run: npm run prepare   # builds lib/ and plugin/build/
 
+      # No NODE_AUTH_TOKEN: the registry trusts this workflow directly, through
+      # the OIDC token minted by `id-token: write` above. Nothing long-lived to
+      # leak, expire, or rotate — and it sidesteps the account's 2FA-on-write
+      # policy, which is what blocked the token-based attempts.
       - name: Publish
         run: npm publish --provenance --access public
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

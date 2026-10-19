@@ -37,8 +37,19 @@ import type {
 // `global.__turboModuleProxy` was also unreliable in bridgeless mode (RN 0.82+),
 // where that global can be absent.
 
+// RN 0.87+ types `addListener` from this map; without it every payload is
+// `Object` and the typed handlers below are rejected.
+type NativeSseEvents = {
+  sse_open: [NativeOpenEvent];
+  sse_chunk: [NativeChunkEvent];
+  sse_error: [NativeErrorEvent];
+  sse_close: [NativeCloseEvent];
+};
+
 const emitter =
-  NativeNativeSse != null ? new NativeEventEmitter(NativeNativeSse) : null;
+  NativeNativeSse != null
+    ? new NativeEventEmitter<NativeSseEvents>(NativeNativeSse)
+    : null;
 
 // ─── Streaming-fetch capability ───────────────────────────────────────────────
 

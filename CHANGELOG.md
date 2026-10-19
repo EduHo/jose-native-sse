@@ -5,6 +5,21 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Built and verified against Expo SDK 58 / React Native 0.88 / React 19.3.**
+  The library's own minimums (`react-native >=0.76`, `react >=18.2`) are
+  unchanged.
+- **Android: compatible with AGP 9.** `kotlin-android` is now applied only when
+  AGP's built-in Kotlin is off (AGP 8, or `android.builtInKotlin=false`, which
+  the RN 0.88 and Expo 58 templates still set). Apps that turn built-in Kotlin
+  on no longer fail with "Cannot add extension with name 'kotlin'". Default
+  `compileSdk` is now 37 and Kotlin 2.2.0, matching RN 0.88.
+- **Building the library needs Node 22.13+, 24.3+ or 26+**, following RN 0.88.
+  This affects contributors only; apps are unaffected.
+
 ## [0.3.0]
 
 A security and correctness release. Two of the fixes are data-integrity bugs that

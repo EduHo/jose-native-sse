@@ -9,13 +9,21 @@ buildscript {
   }
 
   dependencies {
-    classpath "com.android.tools.build:gradle:8.12.0"
+    classpath "com.android.tools.build:gradle:9.2.1"
     classpath "org.jetbrains.kotlin:kotlin-gradle-plugin:${getExtOrDefault('kotlinVersion')}"
   }
 }
 
 apply plugin: "com.android.library"
-apply plugin: "kotlin-android"
+// AGP 9 compiles Kotlin itself ("built-in Kotlin") and fails if kotlin-android
+// is applied on top. Apps can still opt out with android.builtInKotlin=false
+// (the RN 0.88 template does, until AGP 10 removes the switch), and AGP 8 has
+// no built-in Kotlin at all — so the plugin is applied only in those cases.
+def agpMajor = com.android.Version.ANDROID_GRADLE_PLUGIN_VERSION.tokenize(".")[0].toInteger()
+def builtInKotlin = agpMajor >= 9 && project.findProperty("android.builtInKotlin")?.toString() != "false"
+if (!builtInKotlin) {
+  apply plugin: "kotlin-android"
+}
 // React Native's Gradle plugin drives codegen for the TurboModule spec. Since
 // RN 0.82 the New Architecture is the only architecture, so this is applied
 // unconditionally — there is no legacy bridge path left to branch on.

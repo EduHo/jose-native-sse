@@ -10,7 +10,7 @@ Pod::Spec.new do |s|
   s.license      = package["license"]
   s.authors      = package["author"]
 
-  # React Native 0.86 (Expo SDK 57) requires iOS 15.1 as the deployment target.
+  # React Native 0.88 (Expo SDK 58) still requires iOS 15.1 as the deployment target.
   s.platforms    = { :ios => "15.1" }
   s.source       = { :git => "https://github.com/EduHo/jose-native-sse.git", :tag => "#{s.version}" }
 

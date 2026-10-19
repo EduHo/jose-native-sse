@@ -90,16 +90,17 @@ yarn add jose-native-sse
 | React Native | 0.76 (New Architecture) |
 | Expo SDK | 52 |
 | iOS deployment target | 15.1 |
-| Android `compileSdk` / `minSdk` | 36 / 24 |
-| Node (for building the library) | 20.19.4 |
+| Android `compileSdk` / `minSdk` | 37 / 24 |
+| Node (for building the library) | 22.13 / 24.3 / 26 |
 
 The numbers above are the minimums the library itself declares. Your app's own
 React Native / Expo version sets the effective values and they are usually
-higher — an Expo SDK 57 app, for instance, prebuilds with an iOS deployment
+higher — an Expo SDK 58 app, for instance, prebuilds with an iOS deployment
 target of 16.4.
 
-Verified against **Expo SDK 57** / **React Native 0.86.2** on both platforms
-(Gradle `assembleDebug` with Codegen, and `pod install` with Codegen).
+Verified against **Expo SDK 58** / **React Native 0.88.0** on both platforms
+(Gradle `assembleDebug` with Codegen on AGP 9, with and without AGP's built-in
+Kotlin, and `pod install` + simulator build with Codegen on Xcode 27).
 
 ---
 
